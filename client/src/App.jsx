@@ -1,14 +1,20 @@
 import './App.css'
+import { useState } from 'react'
 import Sidebar from './Sidebar'
 
 function App() {
+  const [activePage, setActivePage] = useState('Dashboard')
+
   return (
     <div className="dashboard-layout">
-      <Sidebar />
+      <Sidebar
+        activePage={activePage}
+        onNavigate={setActivePage}
+      />
 
       <main className="main-content">
 
-        <h1>Welcome to AgentCart</h1>
+        <h1>{activePage === 'Dashboard' ? 'Welcome to AgentCart' : activePage}</h1>
         <p>Your AI can shop. You stay in control.</p>
 
         <div className="overview-cards">

@@ -1,19 +1,29 @@
 
-function Sidebar() {
-  return (
-    <aside className="sidebar">
-      <h2>AgentCart</h2>
+function Sidebar(props) {
+    return (
+        <aside className="sidebar">
+            <h2>AgentCart</h2>
 
-      <nav>
-        <p>Dashboard</p>
-        <p>Spending Rules</p>
-        <p>Purchase Requests</p>
-        <p>Transaction History</p>
-      </nav>
+            <nav>
+                <button onClick={() => props.onNavigate('Dashboard')}>
+                    Dashboard
+                </button>
+                <button onClick={() => props.onNavigate('Spending Rules')}>
+                    Spending Rules
+                </button>
 
-      <p className="sidebar-footer">AI Shopping. Your Rules.</p>
-    </aside>
-  )
+                <button onClick={() => props.onNavigate('Purchase Requests')}>
+                    Purchase Requests
+                </button>
+
+                <button onClick={() => props.onNavigate('Transaction History')}>
+                    Transaction History
+                </button>
+            </nav>
+
+            <p className="sidebar-footer">AI Shopping. Your Rules.</p>
+        </aside>
+    )
 }
 
 export default Sidebar
