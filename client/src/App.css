@@ -108,3 +108,59 @@ body {
   color: #94a3b8;
   font-size: 14px;
 }
+
+.spending-rules {
+  margin-top: 32px;
+}
+
+.spending-rules h2 {
+  color: #f1f5f9;
+  font-size: 20px;
+}
+
+.spending-rules p {
+  color: #94a3b8;
+  font-size: 14px;
+}
+
+.rule-card {
+  background-color: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 24px;
+  margin-top: 20px;
+  max-width: 500px;
+}
+
+.rule-card label {
+  display: block;
+  color: #cbd5e1;
+  margin-bottom: 12px;
+}
+
+.rule-card input {
+  width: 100%;
+  padding: 12px;
+  box-sizing: border-box;
+  background-color: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  color: white;
+  font-size: 16px;
+}
+
+.save-rules-btn {
+  margin-top: 24px;
+  padding: 12px 24px;
+  background-color: #38bdf8;
+  color: #0f172a;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.save-rules-btn:hover {
+  background-color: #7dd3fc;
+}

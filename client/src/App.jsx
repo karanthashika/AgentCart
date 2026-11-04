@@ -4,7 +4,9 @@ import Sidebar from './Sidebar'
 
 function App() {
   const [activePage, setActivePage] = useState('Dashboard')
-
+  const [monthlyLimit, setMonthlyLimit] = useState('')
+  const [transactionLimit, setTransactionLimit] = useState('')
+  const [saved, setSaved] = useState(false)
   return (
     <div className="dashboard-layout">
       <Sidebar
@@ -17,28 +19,62 @@ function App() {
         <h1>{activePage === 'Dashboard' ? 'Welcome to AgentCart' : activePage}</h1>
         <p>Your AI can shop. You stay in control.</p>
 
-        <div className="overview-cards">
-          <div className="overview-card">
-            <h3>Total Spending</h3>
-            <p>$0.00</p>
+        {activePage === 'Dashboard' && (
+          <>
+
+            <div className="overview-cards">
+              <div className="overview-card">
+                <h3>Total Spending</h3>
+                <p>$0.00</p>
+              </div>
+
+              <div className="overview-card">
+                <h3>Pending Approvals</h3>
+                <p>0</p>
+              </div>
+
+              <div className="overview-card">
+                <h3>Blocked Transactions</h3>
+                <p>0</p>
+              </div>
+            </div>
+
+
+            <div className="recent-activity">
+              <h2>Recent Activity</h2>
+              <p>No transactions yet. Your AI shopping activity will appear here.</p>
+            </div>
+          </>
+        )}
+        {activePage === 'Spending Rules' && (
+          <div className="spending-rules">
+            <h2>Spending Rules</h2>
+            <p>Set limits for your AI shopping agent.</p>
+
+            <div className="rule-card">
+              <label>Monthly Spending Limit ($)</label>
+              <input
+                type="number"
+                placeholder="Enter monthly limit"
+                value={monthlyLimit}
+                onChange={(e) => setMonthlyLimit(e.target.value)}
+              />
+              <button className="save-rules-btn">
+                Save Rules
+              </button>
+            </div>
+
+            <div className="rule-card">
+              <label>Per Transaction Limit ($)</label>
+              <input
+                type="number"
+                placeholder="Enter per transaction limit"
+                value={transactionLimit}
+                onChange={(e) => setTransactionLimit(e.target.value)}
+              />
+            </div>
           </div>
-
-          <div className="overview-card">
-            <h3>Pending Approvals</h3>
-            <p>0</p>
-          </div>
-
-          <div className="overview-card">
-            <h3>Blocked Transactions</h3>
-            <p>0</p>
-          </div>
-        </div>
-
-
-        <div className="recent-activity">
-          <h2>Recent Activity</h2>
-          <p>No transactions yet. Your AI shopping activity will appear here.</p>
-        </div>
+        )}
       </main>
     </div>
   )
