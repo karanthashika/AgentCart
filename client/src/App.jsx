@@ -7,6 +7,25 @@ function App() {
   const [monthlyLimit, setMonthlyLimit] = useState('')
   const [transactionLimit, setTransactionLimit] = useState('')
   const [saved, setSaved] = useState(false)
+  const [error, setError] = useState('');
+
+  function handleSaveRules() {
+    if (!monthlyLimit || !transactionLimit) {
+      setError('Please enter both spending limits.');
+      setSaved(false);
+      return;
+    }
+
+    if (Number(monthlyLimit) <= 0 || Number(transactionLimit) <= 0) {
+      setError('Spending limits must be greater than zero.');
+      setSaved(false);
+      return;
+    }
+
+    setError('');
+    setSaved(true);
+  }
+
   return (
     <div className="dashboard-layout">
       <Sidebar
@@ -59,9 +78,6 @@ function App() {
                 value={monthlyLimit}
                 onChange={(e) => setMonthlyLimit(e.target.value)}
               />
-              <button className="save-rules-btn">
-                Save Rules
-              </button>
             </div>
 
             <div className="rule-card">
@@ -73,6 +89,22 @@ function App() {
                 onChange={(e) => setTransactionLimit(e.target.value)}
               />
             </div>
+            <button
+              className="save-rules-btn"
+              onClick={handleSaveRules}
+            >
+              Save Rules
+            </button>
+            {saved && (
+              <p className="success-message">
+                Rules saved successfully!
+              </p>
+            )}
+            {error && (
+              <p className="error-message">
+                {error}
+              </p>
+            )}
           </div>
         )}
       </main>
