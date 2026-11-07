@@ -14,6 +14,8 @@ function App() {
   const [isSearching, setIsSearching] = useState(false)
   const [searchError, setSearchError] = useState('')
   const [products, setProducts] = useState([])
+  const [transactions, setTransactions] = useState([])
+  const [transactionsError, setTransactionsError] = useState('')
 
   useEffect(() => {
     // Check backend connection
@@ -48,6 +50,25 @@ function App() {
       .catch((error) => {
         console.error('Error loading spending rules:', error)
       })
+  }, [])
+
+  useEffect(() => {
+    async function loadTransactions() {
+      try {
+        const response = await fetch('http://localhost:5000/api/transactions')
+        const data = await response.json()
+
+        if (!data.success) {
+          throw new Error('Unable to load transactions.')
+        }
+
+        setTransactions(data.transactions)
+      } catch (error) {
+        setTransactionsError(error.message)
+      }
+    }
+
+    loadTransactions()
   }, [])
 
   async function handleSaveRules() {
@@ -370,6 +391,48 @@ function App() {
               <p className="error-message">
                 {error}
               </p>
+            )}
+          </div>
+        )}
+        {activePage === 'Transaction History' && (
+          <div className="transaction-history">
+            <h2>Transaction History</h2>
+            <p>View your completed and pending purchases.</p>
+
+            {transactionsError && (
+              <p className="error-message">{transactionsError}</p>
+            )}
+
+            {transactions.length === 0 && !transactionsError && (
+              <p>No transactions found.</p>
+            )}
+
+            {transactions.length > 0 && (
+              <div className="transactions-list">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Product</th>
+                      <th>Amount</th>
+                      <th>Status</th>
+                      <th>Date</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {transactions.map((transaction) => (
+                      <tr key={transaction.id}>
+                        <td>{transaction.product_name}</td>
+                        <td>
+                          {transaction.currency} {transaction.amount.toFixed(2)}
+                        </td>
+                        <td>{transaction.status}</td>
+                        <td>{transaction.created_at}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         )}

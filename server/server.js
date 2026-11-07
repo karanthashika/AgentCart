@@ -260,6 +260,36 @@ app.get('/api/rules', (req, res) => {
     });
 });
 
+// Get transaction history
+app.get('/api/transactions', (req, res) => {
+    try {
+        const transactions = db.prepare(`
+            SELECT
+                id,
+                product_name,
+                amount,
+                currency,
+                status,
+                paypal_order_id,
+                created_at
+            FROM transactions
+            ORDER BY created_at DESC
+        `).all();
+
+        res.json({
+            success: true,
+            transactions
+        });
+
+    } catch (error) {
+        console.error('Error fetching transactions:', error.message);
+
+        res.status(500).json({
+            success: false,
+            message: 'Unable to fetch transaction history.'
+        });
+    }
+});
 
 // Existing health-check route
 app.get('/', (req, res) => {
