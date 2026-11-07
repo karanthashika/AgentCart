@@ -8,6 +8,9 @@ function Sidebar(props) {
                 <button onClick={() => props.onNavigate('Dashboard')}>
                     Dashboard
                 </button>
+                <button onClick={() => props.onNavigate('AI Shopping')}>
+                    AI Shopping
+                </button>
                 <button onClick={() => props.onNavigate('Spending Rules')}>
                     Spending Rules
                 </button>

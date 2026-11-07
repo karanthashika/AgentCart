@@ -9,6 +9,11 @@ function App() {
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState('');
   const [backendStatus, setBackendStatus] = useState('Checking backend...')
+  // AI Shopping state
+  const [shoppingQuery, setShoppingQuery] = useState('')
+  const [isSearching, setIsSearching] = useState(false)
+  const [searchError, setSearchError] = useState('')
+  const [products, setProducts] = useState([])
 
   useEffect(() => {
     // Check backend connection

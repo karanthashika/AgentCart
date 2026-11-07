@@ -47,6 +47,70 @@ app.post('/api/rules', (req, res) => {
     });
 });
 
+
+// Search products using Channel3
+app.post('/api/products/search', async (req, res) => {
+    try {
+        const { query } = req.body;
+
+        if (typeof query !== 'string' || !query.trim()) {
+            return res.status(400).json({
+                success: false,
+                message: 'Please enter a product to search for.'
+            });
+        }
+
+        const apiKey = process.env.CHANNEL3_API_KEY;
+
+        if (!apiKey) {
+            return res.status(500).json({
+                success: false,
+                message: 'Product search is not configured.'
+            });
+        }
+
+        const response = await fetch(
+            'https://api.trychannel3.com/v1/search',
+            {
+                method: 'POST',
+                headers: {
+                    'x-api-key': apiKey,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    query: query.trim(),
+                    config: { mode: 'agentic' },
+                    limit: 5
+                })
+            }
+        );
+
+        if (!response.ok) {
+            console.error('Channel3 request failed:', response.status);
+
+            return res.status(502).json({
+                success: false,
+                message: 'Product search provider is temporarily unavailable.'
+            });
+        }
+
+        const data = await response.json();
+
+        res.json({
+            success: true,
+            products: data.products || []
+        });
+
+    } catch (error) {
+        console.error('Product search error:', error.message);
+
+        res.status(500).json({
+            success: false,
+            message: 'Something went wrong while searching for products.'
+        });
+    }
+});
+
 // Get saved spending rules
 app.get('/api/rules', (req, res) => {
     const rules = db.prepare(`
