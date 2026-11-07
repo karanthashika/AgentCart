@@ -91,6 +91,36 @@ function evaluatePurchase(price, rules, monthlySpent) {
     };
 }
 
+// Retrieve the latest product details from Channel3
+async function getChannel3Product(productId) {
+    const apiKey = process.env.CHANNEL3_API_KEY;
+
+    if (!apiKey) {
+        throw new Error('Channel3 API key is not configured.');
+    }
+
+    const response = await fetch(
+        `https://api.trychannel3.com/v1/products/${encodeURIComponent(productId)}`,
+        {
+            headers: {
+                'x-api-key': apiKey
+            }
+        }
+    );
+
+    if (!response.ok) {
+        throw new Error('Unable to retrieve the latest product details.');
+    }
+
+    const product = await response.json();
+
+    if (product.id !== productId) {
+        throw new Error('Product verification failed.');
+    }
+
+    return product;
+}
+
 // Search products using Channel3
 app.post('/api/products/search', async (req, res) => {
     try {
