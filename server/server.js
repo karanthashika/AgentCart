@@ -2,17 +2,13 @@
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
+const db = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
-// Store user's spending rules
-let spendingRules = {
-    monthlyLimit: 0,
-    transactionLimit: 0
-};
 
 // Save spending rules
 app.post('/api/rules', (req, res) => {
@@ -33,17 +29,49 @@ app.post('/api/rules', (req, res) => {
         });
     }
 
-    spendingRules = {
-        monthlyLimit,
-        transactionLimit
-    };
+    const saveRules = db.prepare(`
+        INSERT INTO spending_rules (id, monthly_limit, transaction_limit)
+        VALUES (1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            monthly_limit = excluded.monthly_limit,
+            transaction_limit = excluded.transaction_limit,
+            updated_at = CURRENT_TIMESTAMP
+    `);
+
+    saveRules.run(monthlyLimit, transactionLimit);
 
     res.json({
         success: true,
         message: 'Spending rules saved successfully!',
-        rules: spendingRules
+        rules: { monthlyLimit, transactionLimit }
     });
 });
+
+// Get saved spending rules
+app.get('/api/rules', (req, res) => {
+    const rules = db.prepare(`
+        SELECT monthly_limit, transaction_limit, updated_at
+        FROM spending_rules
+        WHERE id = 1
+    `).get();
+
+    if (!rules) {
+        return res.json({
+            success: true,
+            rules: null
+        });
+    }
+
+    res.json({
+        success: true,
+        rules: {
+            monthlyLimit: rules.monthly_limit,
+            transactionLimit: rules.transaction_limit,
+            updatedAt: rules.updated_at
+        }
+    });
+});
+
 
 // Existing health-check route
 app.get('/', (req, res) => {
