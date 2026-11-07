@@ -1,5 +1,5 @@
 import './App.css'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Sidebar from './Sidebar'
 
 function App() {
@@ -8,6 +8,23 @@ function App() {
   const [transactionLimit, setTransactionLimit] = useState('')
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState('');
+  const [backendStatus, setBackendStatus] = useState('Checking backend...')
+
+  useEffect(() => {
+    fetch('http://localhost:5000')
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error('Backend connection failed')
+        }
+        return response.json()
+      })
+      .then((data) => {
+        setBackendStatus(data.message)
+      })
+      .catch(() => {
+        setBackendStatus('Backend is not connected')
+      })
+  }, [])
 
   function handleSaveRules() {
     if (!monthlyLimit || !transactionLimit) {
@@ -37,6 +54,7 @@ function App() {
 
         <h1>{activePage === 'Dashboard' ? 'Welcome to AgentCart' : activePage}</h1>
         <p>Your AI can shop. You stay in control.</p>
+        <p>Backend Status: {backendStatus}</p>
 
         {activePage === 'Dashboard' && (
           <>
