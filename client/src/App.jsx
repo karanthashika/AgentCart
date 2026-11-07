@@ -160,6 +160,37 @@ function App() {
         normalizedDomain.endsWith('.' + trustedDomain)
     )
   }
+
+
+  function isAllowedProductLink(url) {
+    try {
+      const parsedUrl = new URL(url)
+
+      if (parsedUrl.protocol !== 'https:') {
+        return false
+      }
+
+      const allowedDomains = [
+        'buy.trychannel3.com',
+        'macys.com',
+        'selfridges.com',
+        'walmart.com',
+        'bhphotovideo.com',
+        'bestbuy.com',
+        'apple.com',
+        'newegg.com',
+        'microcenter.com'
+      ]
+
+      return allowedDomains.some(
+        (domain) =>
+          parsedUrl.hostname === domain ||
+          parsedUrl.hostname.endsWith('.' + domain)
+      )
+    } catch {
+      return false
+    }
+  }
   return (
     <div className="dashboard-layout">
       <Sidebar
@@ -205,6 +236,7 @@ function App() {
               <div className="product-grid">
                 {products.map((product) => {
                   const offer = product.offers?.[0]
+                  const productUrl = offer?.url
                   const mainImage =
                     product.images?.find((image) => image.is_main_image)
                     || product.images?.[0]
@@ -243,14 +275,18 @@ function App() {
                               : '⚠ Retailer needs verification'}
                           </p>
 
-                          {offer.url && (
+                          {productUrl && isAllowedProductLink(productUrl) ? (
                             <a
-                              href={offer.url}
+                              href={productUrl}
                               target="_blank"
                               rel="noopener noreferrer"
                             >
                               View Product
                             </a>
+                          ) : (
+                            <p className="retailer-warning">
+                              ⚠ Product link could not be verified
+                            </p>
                           )}
                         </>
                       )}
