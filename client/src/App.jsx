@@ -99,6 +99,67 @@ function App() {
     }
   }
 
+
+  async function handleProductSearch() {
+    if (!shoppingQuery.trim()) {
+      setSearchError('Please enter a product to search for.')
+      return
+    }
+
+    setIsSearching(true)
+    setSearchError('')
+    setProducts([])
+
+    try {
+      const response = await fetch(
+        'http://localhost:5000/api/products/search',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            query: shoppingQuery
+          })
+        }
+      )
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.message || 'Product search failed.')
+      }
+
+      setProducts(data.products || [])
+
+    } catch (error) {
+      setSearchError(error.message || 'Could not connect to AgentCart.')
+    } finally {
+      setIsSearching(false)
+    }
+  }
+  function isRecognizedRetailer(domain) {
+    const trustedDomains = [
+      'macys.com',
+      'selfridges.com',
+      'walmart.com',
+      'bhphotovideo.com',
+      'bestbuy.com',
+      'apple.com',
+      'newegg.com',
+      'microcenter.com'
+    ]
+
+    if (!domain) return false
+
+    const normalizedDomain = domain.toLowerCase().trim()
+
+    return trustedDomains.some(
+      (trustedDomain) =>
+        normalizedDomain === trustedDomain ||
+        normalizedDomain.endsWith('.' + trustedDomain)
+    )
+  }
   return (
     <div className="dashboard-layout">
       <Sidebar
@@ -107,6 +168,101 @@ function App() {
       />
 
       <main className="main-content">
+
+
+        {activePage === 'AI Shopping' && (
+          <div className="ai-shopping">
+            <h2>AI Shopping Assistant</h2>
+            <p>Tell AgentCart what you're looking for.</p>
+
+            <div className="search-container">
+              <input
+                type="text"
+                placeholder="e.g. Wireless headphones under $100"
+                value={shoppingQuery}
+                onChange={(e) => setShoppingQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleProductSearch()
+                }}
+              />
+
+              <button
+                onClick={handleProductSearch}
+                disabled={isSearching}
+              >
+                {isSearching ? 'Searching...' : 'Search Products'}
+              </button>
+            </div>
+
+            {searchError && (
+              <p className="error-message">{searchError}</p>
+            )}
+
+            {isSearching && <p>Finding products for you...</p>}
+
+
+            {products.length > 0 && (
+              <div className="product-grid">
+                {products.map((product) => {
+                  const offer = product.offers?.[0]
+                  const mainImage =
+                    product.images?.find((image) => image.is_main_image)
+                    || product.images?.[0]
+
+                  const imageUrl = mainImage?.cleaned_url || mainImage?.url
+                  const brand = product.brands?.[0]?.name
+                  const retailerDomain = offer?.domain
+                  const retailerRecognized = isRecognizedRetailer(retailerDomain)
+
+                  return (
+                    <div className="product-card" key={product.id}>
+                      {imageUrl && (
+                        <img src={imageUrl} alt={product.title} />
+                      )}
+
+                      <h3>{product.title}</h3>
+
+                      {brand && <p>Brand: {brand}</p>}
+
+                      {product.description && (
+                        <p>{product.description}</p>
+                      )}
+
+                      {offer && (
+                        <>
+                          <h3>
+                            {offer.price?.currency || '$'}{' '}
+                            {offer.price?.price ?? 'Price unavailable'}
+                          </h3>
+
+                          <p>Retailer: {retailerDomain || 'Unknown retailer'}</p>
+
+                          <p className={retailerRecognized ? 'retailer-trusted' : 'retailer-warning'}>
+                            {retailerRecognized
+                              ? '✓ Recognized retailer'
+                              : '⚠ Retailer needs verification'}
+                          </p>
+
+                          {offer.url && (
+                            <a
+                              href={offer.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              View Product
+                            </a>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+          </div>
+        )}
+
 
         <h1>{activePage === 'Dashboard' ? 'Welcome to AgentCart' : activePage}</h1>
         <p>Your AI can shop. You stay in control.</p>
