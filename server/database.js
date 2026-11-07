@@ -11,4 +11,16 @@ db.exec(`
     )
 `);
 
+db.exec(`
+    CREATE TABLE IF NOT EXISTS transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_name TEXT NOT NULL,
+        amount REAL NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        paypal_order_id TEXT UNIQUE,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+`);
+
 module.exports = db;
