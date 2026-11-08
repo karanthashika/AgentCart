@@ -16,6 +16,12 @@ function App() {
   const [products, setProducts] = useState([])
   const [transactions, setTransactions] = useState([])
   const [transactionsError, setTransactionsError] = useState('')
+  const [dashboardStats, setDashboardStats] = useState({
+    totalSpending: 0,
+    pendingPayments: 0,
+    blockedTransactions: 0
+  })
+  const [dashboardError, setDashboardError] = useState('')
 
   useEffect(() => {
     // Check backend connection
@@ -69,6 +75,25 @@ function App() {
     }
 
     loadTransactions()
+  }, [])
+
+  useEffect(() => {
+    async function loadDashboardStats() {
+      try {
+        const response = await fetch('http://localhost:5000/api/dashboard')
+        const data = await response.json()
+
+        if (!data.success) {
+          throw new Error('Unable to load dashboard statistics.')
+        }
+
+        setDashboardStats(data.stats)
+      } catch (error) {
+        setDashboardError(error.message)
+      }
+    }
+
+    loadDashboardStats()
   }, [])
 
   async function handleSaveRules() {
@@ -330,25 +355,48 @@ function App() {
 
             <div className="overview-cards">
               <div className="overview-card">
-                <h3>Total Spending</h3>
-                <p>$0.00</p>
+                <h3>Total Spending This Month</h3>
+                <p>${Number(dashboardStats.totalSpending).toFixed(2)}</p>
               </div>
 
               <div className="overview-card">
-                <h3>Pending Approvals</h3>
-                <p>0</p>
+                <h3>Pending Payments</h3>
+                <p>{dashboardStats.pendingPayments}</p>
               </div>
 
               <div className="overview-card">
                 <h3>Blocked Transactions</h3>
-                <p>0</p>
+                <p>{dashboardStats.blockedTransactions}</p>
               </div>
             </div>
 
 
             <div className="recent-activity">
               <h2>Recent Activity</h2>
-              <p>No transactions yet. Your AI shopping activity will appear here.</p>
+
+              {transactionsError && (
+                <p className="error-message">{transactionsError}</p>
+              )}
+
+              {!transactionsError && transactions.length === 0 && (
+                <p>No transactions yet. Your AI shopping activity will appear here.</p>
+              )}
+
+              {transactions.slice(0, 5).map((transaction) => (
+                <div className="activity-item" key={transaction.id}>
+                  <div>
+                    <strong>{transaction.product_name}</strong>
+                    <p>{transaction.created_at}</p>
+                  </div>
+
+                  <div>
+                    <strong>
+                      {transaction.currency} {Number(transaction.amount).toFixed(2)}
+                    </strong>
+                    <p>{transaction.status}</p>
+                  </div>
+                </div>
+              ))}
             </div>
           </>
         )}
