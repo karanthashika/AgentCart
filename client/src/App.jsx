@@ -22,6 +22,51 @@ function App() {
     blockedTransactions: 0
   })
   const [dashboardError, setDashboardError] = useState('')
+  const [purchaseError, setPurchaseError] = useState('')
+  const [purchaseMessage, setPurchaseMessage] = useState('')
+  const [isCreatingOrder, setIsCreatingOrder] = useState(false)
+  async function handlePurchase(product) {
+    setPurchaseError('')
+    setPurchaseMessage('')
+    setIsCreatingOrder(true)
+
+    try {
+      const response = await fetch(
+        'http://localhost:5000/api/paypal/orders',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            productId: product.id
+          })
+        }
+      )
+
+      const data = await response.json()
+
+      if (response.status === 409 && data.decision === 'NEEDS_APPROVAL') {
+        setPurchaseMessage(
+          `Additional approval required: ${data.reason}`
+        )
+        return
+      }
+
+      if (!response.ok) {
+        throw new Error(data.reason || data.message || 'Unable to create PayPal order.')
+      }
+
+      setPurchaseMessage('Redirecting to PayPal...')
+
+      window.location.href = data.approvalUrl
+
+    } catch (error) {
+      setPurchaseError(error.message)
+    } finally {
+      setIsCreatingOrder(false)
+    }
+  }
 
   useEffect(() => {
     // Check backend connection
@@ -279,73 +324,103 @@ function App() {
 
 
             {products.length > 0 && (
-              <div className="product-grid">
-                {products.map((product) => {
-                  const offer = product.offers?.[0]
-                  const productUrl = offer?.url
-                  const mainImage =
-                    product.images?.find((image) => image.is_main_image)
-                    || product.images?.[0]
+              <>
+                {purchaseError && (
+                  <p className="retailer-warning" role="alert">
+                    {purchaseError}
+                  </p>
+                )}
 
-                  const imageUrl = mainImage?.cleaned_url || mainImage?.url
-                  const brand = product.brands?.[0]?.name
-                  const retailerDomain = offer?.domain
-                  const retailerRecognized = isRecognizedRetailer(retailerDomain)
+                {purchaseMessage && (
+                  <p className="purchase-message">
+                    {purchaseMessage}
+                  </p>
+                )}
 
-                  return (
-                    <div className="product-card" key={product.id}>
-                      {imageUrl && (
-                        <img src={imageUrl} alt={product.title} />
-                      )}
+                <div className="product-grid">
 
-                      <h3>{product.title}</h3>
+                  {products.map((product) => {
+                    const offer = product.offers?.[0]
+                    const productUrl = offer?.url
+                    const mainImage =
+                      product.images?.find((image) => image.is_main_image)
+                      || product.images?.[0]
 
-                      {brand && <p>Brand: {brand}</p>}
+                    const imageUrl = mainImage?.cleaned_url || mainImage?.url
+                    const brand = product.brands?.[0]?.name
+                    const retailerDomain = offer?.domain
+                    const retailerRecognized = isRecognizedRetailer(retailerDomain)
 
-                      {product.description && (
-                        <p>{product.description}</p>
-                      )}
+                    return (
+                      <div className="product-card" key={product.id}>
+                        {imageUrl && (
+                          <img src={imageUrl} alt={product.title} />
+                        )}
 
-                      {offer && (
-                        <>
-                          <h3>
-                            {offer.price?.currency || '$'}{' '}
-                            {offer.price?.price ?? 'Price unavailable'}
-                          </h3>
+                        <h3>{product.title}</h3>
 
-                          <p>Retailer: {retailerDomain || 'Unknown retailer'}</p>
+                        {brand && <p>Brand: {brand}</p>}
 
-                          <p className={retailerRecognized ? 'retailer-trusted' : 'retailer-warning'}>
-                            {retailerRecognized
-                              ? '✓ Recognized retailer'
-                              : '⚠ Retailer needs verification'}
-                          </p>
+                        {product.description && (
+                          <p>{product.description}</p>
+                        )}
 
-                          {productUrl && isAllowedProductLink(productUrl) ? (
-                            <a
-                              href={productUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                            >
-                              View Product
-                            </a>
-                          ) : (
-                            <p className="retailer-warning">
-                              ⚠ Product link could not be verified
+                        {offer && (
+                          <>
+                            <h3>
+                              {offer.price?.currency || '$'}{' '}
+                              {offer.price?.price ?? 'Price unavailable'}
+                            </h3>
+
+                            <p>Retailer: {retailerDomain || 'Unknown retailer'}</p>
+                            {product.spendingDecision && (
+                              <div className="spending-decision">
+                                <strong>
+                                  Spending Decision: {product.spendingDecision.decision}
+                                </strong>
+
+                                <p>{product.spendingDecision.reason}</p>
+                              </div>
+                            )}
+
+                            <p className={retailerRecognized ? 'retailer-trusted' : 'retailer-warning'}>
+                              {retailerRecognized
+                                ? '✓ Recognized retailer'
+                                : '⚠ Retailer needs verification'}
                             </p>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
 
+                            {productUrl && isAllowedProductLink(productUrl) ? (
+                              <>
+                                <a
+                                  href={productUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                >
+                                  View Product
+                                </a>
+
+                                <button
+                                  onClick={() => handlePurchase(product)}
+                                  disabled={isCreatingOrder}
+                                >
+                                  {isCreatingOrder ? 'Creating Order...' : 'Buy with PayPal'}
+                                </button>
+                              </>
+                            ) : (
+                              <p className="retailer-warning">
+                                ⚠ Product link could not be verified
+                              </p>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </>
+            )}
           </div>
         )}
-
-
         <h1>{activePage === 'Dashboard' ? 'Welcome to AgentCart' : activePage}</h1>
         <p>Your AI can shop. You stay in control.</p>
         <p>Backend Status: {backendStatus}</p>
