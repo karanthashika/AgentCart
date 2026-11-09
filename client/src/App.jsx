@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react'
 import Sidebar from './Sidebar'
 
 function App() {
+  const paypalReturnHandled = useRef(false)
   const [activePage, setActivePage] = useState('Dashboard')
   const [monthlyLimit, setMonthlyLimit] = useState('')
   const [transactionLimit, setTransactionLimit] = useState('')
@@ -223,6 +224,11 @@ function App() {
       }
 
       if (paymentStatus !== 'success' || !orderId) {
+        if (paypalReturnHandled.current) {
+          return
+        }
+
+        paypalReturnHandled.current = true
         return
       }
 
@@ -514,20 +520,20 @@ function App() {
 
             {isSearching && <p>Finding products for you...</p>}
 
+            {purchaseError && (
+              <p className="retailer-warning" role="alert">
+                {purchaseError}
+              </p>
+            )}
+
+            {purchaseMessage && (
+              <p className="purchase-message">
+                {purchaseMessage}
+              </p>
+            )}
 
             {products.length > 0 && (
               <>
-                {purchaseError && (
-                  <p className="retailer-warning" role="alert">
-                    {purchaseError}
-                  </p>
-                )}
-
-                {purchaseMessage && (
-                  <p className="purchase-message">
-                    {purchaseMessage}
-                  </p>
-                )}
 
                 <div className="product-grid">
 
