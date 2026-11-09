@@ -1,5 +1,6 @@
 
 const express = require('express');
+const crypto = require('crypto');
 const cors = require('cors');
 require('dotenv').config();
 const db = require('./database');
@@ -333,13 +334,416 @@ async function generatePayPalAccessToken() {
     return data.access_token;
 }
 
+// Verify a purchase approval token
+function verifyApprovalToken(submittedToken, storedHash) {
+    if (
+        typeof submittedToken !== 'string' ||
+        !/^[a-f0-9]{64}$/i.test(submittedToken) ||
+        typeof storedHash !== 'string' ||
+        !/^[a-f0-9]{64}$/i.test(storedHash)
+    ) {
+        return false;
+    }
+
+    const submittedHash = crypto
+        .createHash('sha256')
+        .update(submittedToken)
+        .digest('hex');
+
+    return crypto.timingSafeEqual(
+        Buffer.from(submittedHash, 'hex'),
+        Buffer.from(storedHash, 'hex')
+    );
+}
+// Find and validate a pending purchase approval
+function getPendingApproval(approvalId, token) {
+    const id = Number(approvalId);
+
+    if (!Number.isSafeInteger(id) || id <= 0) {
+        return { error: 'Invalid approval ID.' };
+    }
+
+    const approval = db.prepare(`
+        SELECT *
+        FROM purchase_approvals
+        WHERE id = ?
+    `).get(id);
+
+    if (!approval) {
+        return { error: 'Approval request not found.' };
+    }
+
+    if (approval.status !== 'PENDING') {
+        return { error: 'This approval request has already been used.' };
+    }
+
+    const expired = db.prepare(`
+        SELECT datetime(?) <= datetime('now') AS expired
+    `).get(approval.expires_at).expired;
+
+    if (expired) {
+        db.prepare(`
+            UPDATE purchase_approvals
+            SET status = 'EXPIRED'
+            WHERE id = ? AND status = 'PENDING'
+        `).run(id);
+
+        return { error: 'This approval request has expired.' };
+    }
+
+    if (!verifyApprovalToken(token, approval.approval_token_hash)) {
+        return { error: 'Invalid approval token.' };
+    }
+
+    return { approval };
+}
+
+// Request approval for a purchase that exceeds the transaction limit
+app.post('/api/purchase-approvals', async (req, res) => {
+    try {
+        const { productId } = req.body;
+
+        if (typeof productId !== 'string' || !productId.trim()) {
+            return res.status(400).json({
+                success: false,
+                message: 'A valid product ID is required.'
+            });
+        }
+
+        const product = await getChannel3Product(productId);
+
+        const offer = product.offers?.find(
+            (item) =>
+                item.price?.currency === 'USD' &&
+                item.availability === 'InStock' &&
+                item.condition === 'new'
+        );
+
+        const price = Number(offer?.price?.price);
+
+        if (!offer || !Number.isFinite(price) || price <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'A valid in-stock USD offer could not be found.'
+            });
+        }
+
+        const rules = db.prepare(`
+            SELECT monthly_limit, transaction_limit
+            FROM spending_rules
+            WHERE id = 1
+        `).get();
+
+        if (!rules) {
+            return res.status(400).json({
+                success: false,
+                message: 'Please configure your spending rules first.'
+            });
+        }
+
+        const decision = evaluatePurchase(
+            price,
+            {
+                monthlyLimit: rules.monthly_limit,
+                transactionLimit: rules.transaction_limit
+            },
+            getMonthlySpent()
+        );
+
+        if (decision.decision !== 'NEEDS_APPROVAL') {
+            return res.status(409).json({
+                success: false,
+                ...decision,
+                message: 'This product does not require purchase approval.'
+            });
+        }
+
+        const approvalToken = crypto.randomBytes(32).toString('hex');
+
+        const approvalTokenHash = crypto
+            .createHash('sha256')
+            .update(approvalToken)
+            .digest('hex');
+
+        const approval = db.prepare(`
+        INSERT INTO purchase_approvals (
+    product_id,
+    product_name,
+    amount,
+    expires_at,
+    approval_token_hash
+)
+            VALUES (?, ?, ?, datetime('now', '+10 minutes'), ?)
+        `).run(productId, product.title, price, approvalTokenHash);
+
+        res.status(201).json({
+            success: true,
+            message: 'Purchase approval requested.',
+            approvalId: approval.lastInsertRowid,
+            token: approvalToken,
+            productName: product.title,
+            amount: price
+        });
+
+    } catch (error) {
+        console.error('Purchase approval error:', error.message);
+
+        res.status(500).json({
+            success: false,
+            message: 'Unable to request purchase approval.'
+        });
+    }
+});
+// Approve a purchase and create its PayPal order
+app.post('/api/purchase-approvals/:approvalId/approve', async (req, res) => {
+    let reservedTransactionId;
+    let processingApprovalId;
+
+    try {
+        const { approvalId } = req.params;
+        const { token } = req.body;
+
+        const result = getPendingApproval(approvalId, token);
+
+        if (result.error) {
+            return res.status(409).json({
+                success: false,
+                message: result.error
+            });
+        }
+
+        const approval = result.approval;
+        processingApprovalId = approval.id;
+
+        // Retrieve the latest product information
+        const product = await getChannel3Product(approval.product_id);
+
+        const offer = product.offers?.find(
+            (item) =>
+                item.price?.currency === 'USD' &&
+                item.availability === 'InStock' &&
+                item.condition === 'new'
+        );
+
+        const currentPrice = Number(offer?.price?.price);
+
+        if (
+            !offer ||
+            !Number.isFinite(currentPrice) ||
+            currentPrice <= 0 ||
+            Math.round(currentPrice * 100) !== Math.round(approval.amount * 100)
+        ) {
+            return res.status(409).json({
+                success: false,
+                message: 'Product price or availability has changed. Please request approval again.'
+            });
+        }
+
+        // Load the latest spending rules
+        const rules = db.prepare(`
+            SELECT monthly_limit, transaction_limit
+            FROM spending_rules
+            WHERE id = 1
+        `).get();
+
+        if (!rules) {
+            return res.status(400).json({
+                success: false,
+                message: 'Please configure your spending rules first.'
+            });
+        }
+
+        // Reserve the approved purchase only once
+        const reserveApproval = db.transaction(() => {
+            // Expire old pending transactions
+            db.prepare(`
+                UPDATE transactions
+                SET status = 'EXPIRED'
+                WHERE status = 'PENDING'
+                AND created_at <= datetime('now', '-30 minutes')
+            `).run();
+
+            // Calculate current monthly spending
+            const latestSpent = db.prepare(`
+                SELECT COALESCE(SUM(amount), 0) AS total
+                FROM transactions
+                WHERE status IN ('COMPLETED', 'PENDING')
+                AND currency = 'USD'
+                AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')
+            `).get().total;
+
+            // Recheck the spending policy
+            const latestDecision = evaluatePurchase(
+                currentPrice,
+                {
+                    monthlyLimit: rules.monthly_limit,
+                    transactionLimit: rules.transaction_limit
+                },
+                latestSpent
+            );
+
+            if (latestDecision.decision !== 'NEEDS_APPROVAL') {
+                return {
+                    error: 'Spending rules or available budget have changed. Please review the purchase again.'
+                };
+            }
+
+            // Mark this approval as being processed
+            const updated = db.prepare(`
+                UPDATE purchase_approvals
+                SET status = 'PROCESSING'
+                WHERE id = ?
+                AND status = 'PENDING'
+                AND expires_at > datetime('now')
+            `).run(approval.id);
+
+            if (updated.changes !== 1) {
+                return {
+                    error: 'This approval request is no longer available.'
+                };
+            }
+
+            // Reserve a pending transaction
+            const transaction = db.prepare(`
+                INSERT INTO transactions (
+                    product_name,
+                    amount,
+                    currency,
+                    status
+                )
+                VALUES (?, ?, 'USD', 'PENDING')
+            `).run(product.title, currentPrice);
+
+            return {
+                transactionId: transaction.lastInsertRowid
+            };
+        });
+
+        const reservation = reserveApproval();
+
+        if (reservation.error) {
+            return res.status(409).json({
+                success: false,
+                message: reservation.error
+            });
+        }
+
+        reservedTransactionId = reservation.transactionId;
+
+        // Create the PayPal order
+        const accessToken = await generatePayPalAccessToken();
+        const baseUrl = process.env.PAYPAL_BASE_URL;
+        const clientUrl = process.env.CLIENT_URL;
+
+        if (!clientUrl) {
+            throw new Error('Frontend URL is not configured.');
+        }
+
+        const paypalResponse = await fetch(
+            `${baseUrl}/v2/checkout/orders`,
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    intent: 'CAPTURE',
+                    purchase_units: [{
+                        reference_id: String(reservedTransactionId),
+                        description: product.title,
+                        amount: {
+                            currency_code: 'USD',
+                            value: currentPrice.toFixed(2)
+                        }
+                    }],
+                    application_context: {
+                        return_url: `${clientUrl}/?payment=success`,
+                        cancel_url: `${clientUrl}/?payment=cancelled`
+                    }
+                })
+            }
+        );
+
+        const paypalData = await paypalResponse.json();
+
+        if (!paypalResponse.ok) {
+            console.error('PayPal order error:', paypalData);
+            throw new Error('PayPal could not create the order.');
+        }
+
+        const approvalLink = paypalData.links?.find(
+            (link) => link.rel === 'approve'
+        )?.href;
+
+        if (!approvalLink) {
+            throw new Error('PayPal approval link was not returned.');
+        }
+
+        // Save the PayPal order and consume the approval request
+        const completeApproval = db.transaction(() => {
+            const transactionUpdate = db.prepare(`
+                UPDATE transactions
+                SET paypal_order_id = ?
+                WHERE id = ? AND status = 'PENDING'
+            `).run(paypalData.id, reservedTransactionId);
+
+            const approvalUpdate = db.prepare(`
+                UPDATE purchase_approvals
+                SET status = 'APPROVED'
+                WHERE id = ? AND status = 'PROCESSING'
+            `).run(approval.id);
+
+            if (
+                transactionUpdate.changes !== 1 ||
+                approvalUpdate.changes !== 1
+            ) {
+                throw new Error('Unable to finalize the approved purchase.');
+            }
+        });
+
+        completeApproval();
+
+        res.status(201).json({
+            success: true,
+            message: 'Purchase approved. PayPal buyer approval is required.',
+            orderID: paypalData.id,
+            approvalUrl: approvalLink,
+            transactionId: reservedTransactionId
+        });
+
+    } catch (error) {
+        console.error('Purchase approval error:', error.message);
+
+        if (reservedTransactionId) {
+            db.prepare(`
+                UPDATE transactions
+                SET status = 'FAILED'
+                WHERE id = ? AND status = 'PENDING'
+            `).run(reservedTransactionId);
+        }
+
+        if (processingApprovalId) {
+            db.prepare(`
+                UPDATE purchase_approvals
+                SET status = 'FAILED'
+                WHERE id = ? AND status = 'PROCESSING'
+            `).run(processingApprovalId);
+        }
+
+        res.status(500).json({
+            success: false,
+            message: 'Unable to approve the purchase or create its PayPal order.'
+        });
+    }
+});
 
 // Create a PayPal order after checking the product and spending rules
 app.post('/api/paypal/orders', async (req, res) => {
     let reservedTransactionId;
 
     try {
-        const { productId, userApproved } = req.body;
+        const { productId } = req.body;
 
         if (typeof productId !== 'string' || !productId.trim()) {
             return res.status(400).json({
@@ -412,10 +816,7 @@ app.post('/api/paypal/orders', async (req, res) => {
                 return { blocked: true, decision };
             }
 
-            if (
-                decision.decision === 'NEEDS_APPROVAL' &&
-                userApproved !== true
-            ) {
+            if (decision.decision === 'NEEDS_APPROVAL') {
                 return { needsApproval: true, decision };
             }
 
