@@ -505,11 +505,16 @@ app.post('/api/purchase-approvals', async (req, res) => {
                 item.condition === 'new'
         );
 
-        console.log('Retailer confirmation debug:', {
-            domain: offer?.domain,
-            confirmationReceived: req.body?.allowUnrecognizedRetailer,
-            requestBody: req.body
-        });
+        const price = Number(offer?.price?.price);
+
+        if (!offer || !Number.isFinite(price) || price <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'A valid in-stock USD offer could not be found.'
+            });
+        }
+
+        // Verify the retailer before requesting purchase approval
         const retailerRecognized = isRecognizedRetailer(offer?.domain);
 
         if (
@@ -520,15 +525,6 @@ app.post('/api/purchase-approvals', async (req, res) => {
                 success: false,
                 decision: 'UNVERIFIED_RETAILER',
                 message: 'This retailer is not verified by AgentCart. User confirmation is required.'
-            });
-        }
-
-        const price = Number(offer?.price?.price);
-
-        if (!offer || !Number.isFinite(price) || price <= 0) {
-            return res.status(400).json({
-                success: false,
-                message: 'A valid in-stock USD offer could not be found.'
             });
         }
 
@@ -622,6 +618,7 @@ app.post('/api/purchase-approvals/:approvalId/approve', async (req, res) => {
         // Retrieve the latest product information
         const product = await getChannel3Product(approval.product_id);
 
+        // Find a fresh, valid offer for the approved product
         const offer = product.offers?.find(
             (item) =>
                 item.price?.currency === 'USD' &&
@@ -629,7 +626,25 @@ app.post('/api/purchase-approvals/:approvalId/approve', async (req, res) => {
                 item.condition === 'new'
         );
 
-        const retailerRecognized = isRecognizedRetailer(offer?.domain);
+        const currentPrice = Number(offer?.price?.price);
+
+        if (!offer || !Number.isFinite(currentPrice) || currentPrice <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'A valid in-stock USD offer could not be found.'
+            });
+        }
+
+        // Do not proceed if the price changed after the user requested approval
+        if (Math.abs(currentPrice - approval.amount) > 0.001) {
+            return res.status(409).json({
+                success: false,
+                message: 'The product price has changed. Please request approval again.'
+            });
+        }
+
+        // Verify that the user confirmed an unrecognized retailer
+        const retailerRecognized = isRecognizedRetailer(offer.domain);
 
         if (
             !retailerRecognized &&
@@ -639,20 +654,6 @@ app.post('/api/purchase-approvals/:approvalId/approve', async (req, res) => {
                 success: false,
                 decision: 'UNVERIFIED_RETAILER',
                 message: 'This retailer is not verified by AgentCart. User confirmation is required.'
-            });
-        }
-
-        const currentPrice = Number(offer?.price?.price);
-
-        if (
-            !offer ||
-            !Number.isFinite(currentPrice) ||
-            currentPrice <= 0 ||
-            Math.round(currentPrice * 100) !== Math.round(approval.amount * 100)
-        ) {
-            return res.status(409).json({
-                success: false,
-                message: 'Product price or availability has changed. Please request approval again.'
             });
         }
 
@@ -885,6 +886,19 @@ app.post('/api/paypal/orders', async (req, res) => {
             return res.status(400).json({
                 success: false,
                 message: 'A valid in-stock USD offer could not be found.'
+            });
+        }
+        // Verify the retailer before allowing the purchase
+        const retailerRecognized = isRecognizedRetailer(offer?.domain);
+
+        if (
+            !retailerRecognized &&
+            req.body?.allowUnrecognizedRetailer !== true
+        ) {
+            return res.status(403).json({
+                success: false,
+                decision: 'UNVERIFIED_RETAILER',
+                message: 'This retailer is not verified by AgentCart. User confirmation is required.'
             });
         }
 
