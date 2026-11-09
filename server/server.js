@@ -122,6 +122,45 @@ async function getChannel3Product(productId) {
     return product;
 }
 
+function isRecognizedRetailer(domain) {
+    const trustedDomains = [
+        'macys.com',
+        'selfridges.com',
+        'walmart.com',
+        'bhphotovideo.com',
+        'bestbuy.com',
+        'apple.com',
+        'newegg.com',
+        'microcenter.com',
+        'adidas.com',
+        'adidas.ca'
+    ];
+
+    if (typeof domain !== 'string' || !domain.trim()) {
+        return false;
+    }
+
+    const normalizedDomain = domain
+        .toLowerCase()
+        .trim()
+        .replace(/\.$/, '');
+
+    if (
+        normalizedDomain.includes('://') ||
+        /[\/:@\s]/.test(normalizedDomain) ||
+        !/^[a-z0-9.-]+$/.test(normalizedDomain) ||
+        normalizedDomain.includes('..')
+    ) {
+        return false;
+    }
+
+    return trustedDomains.some(
+        trustedDomain =>
+            normalizedDomain === trustedDomain ||
+            normalizedDomain.endsWith('.' + trustedDomain)
+    );
+}
+
 // Search products using Channel3
 app.post('/api/products/search', async (req, res) => {
     try {
@@ -466,6 +505,24 @@ app.post('/api/purchase-approvals', async (req, res) => {
                 item.condition === 'new'
         );
 
+        console.log('Retailer confirmation debug:', {
+            domain: offer?.domain,
+            confirmationReceived: req.body?.allowUnrecognizedRetailer,
+            requestBody: req.body
+        });
+        const retailerRecognized = isRecognizedRetailer(offer?.domain);
+
+        if (
+            !retailerRecognized &&
+            req.body?.allowUnrecognizedRetailer !== true
+        ) {
+            return res.status(403).json({
+                success: false,
+                decision: 'UNVERIFIED_RETAILER',
+                message: 'This retailer is not verified by AgentCart. User confirmation is required.'
+            });
+        }
+
         const price = Number(offer?.price?.price);
 
         if (!offer || !Number.isFinite(price) || price <= 0) {
@@ -571,6 +628,19 @@ app.post('/api/purchase-approvals/:approvalId/approve', async (req, res) => {
                 item.availability === 'InStock' &&
                 item.condition === 'new'
         );
+
+        const retailerRecognized = isRecognizedRetailer(offer?.domain);
+
+        if (
+            !retailerRecognized &&
+            req.body?.allowUnrecognizedRetailer !== true
+        ) {
+            return res.status(403).json({
+                success: false,
+                decision: 'UNVERIFIED_RETAILER',
+                message: 'This retailer is not verified by AgentCart. User confirmation is required.'
+            });
+        }
 
         const currentPrice = Number(offer?.price?.price);
 
@@ -1158,10 +1228,8 @@ app.post('/api/paypal/orders/:orderId/capture', async (req, res) => {
     }
 });
 
-// Understand a natural-language shopping request
-
-// Understand a natural-language shopping request using Gemini
-app.post('/api/agent/interpret', async (req, res) => {
+// Interpret shopping requests locally without relying on the Gemini API
+app.post('/api/agent/interpret', (req, res) => {
     try {
         const { message } = req.body;
 
@@ -1176,103 +1244,70 @@ app.post('/api/agent/interpret', async (req, res) => {
             });
         }
 
-        if (!process.env.GEMINI_API_KEY) {
-            return res.status(500).json({
-                success: false,
-                message: 'Gemini API key is not configured.'
-            });
-        }
+        const text = message.trim();
 
-        const response = await fetch(
-            'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent',
-            {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'x-goog-api-key': process.env.GEMINI_API_KEY
-                },
-                body: JSON.stringify({
-                    systemInstruction: {
-                        parts: [{
-                            text: `You are AgentCart's shopping assistant.
-Understand the user's shopping request.
-Extract the product search phrase,
-maximum budget in USD if specified,
-and product preferences.
+        // Extract the user's maximum budget
+        const budgetMatch = text.match(
+            /(?:under|below|less than|up to|upto|within|maximum(?: of)?|max(?:imum)?(?: budget)?(?: of)?)\s*\$?\s*(\d+(?:\.\d+)?)/i
+        ) || text.match(/\$\s*(\d+(?:\.\d+)?)/);
 
-Never approve purchases or make payments.
-Return only the requested structured data.`
-                        }]
-                    },
-                    contents: [{
-                        parts: [{
-                            text: message.trim()
-                        }]
-                    }],
-                    generationConfig: {
-                        responseMimeType: 'application/json',
-                        responseSchema: {
-                            type: 'OBJECT',
-                            properties: {
-                                searchQuery: {
-                                    type: 'STRING'
-                                },
-                                maxPriceUSD: {
-                                    type: 'NUMBER',
-                                    nullable: true
-                                },
-                                preferences: {
-                                    type: 'ARRAY',
-                                    items: {
-                                        type: 'STRING'
-                                    }
-                                }
-                            },
-                            required: [
-                                'searchQuery',
-                                'maxPriceUSD',
-                                'preferences'
-                            ]
-                        },
-                        temperature: 0.2,
-                        maxOutputTokens: 256
-                    }
-                })
-            }
+        const maxPriceUSD = budgetMatch
+            ? Number(budgetMatch[1])
+            : null;
+
+        // Extract useful shopping preferences
+        const preferenceWords = [
+            'wireless',
+            'bluetooth',
+            'noise cancelling',
+            'noise cancellation',
+            'waterproof',
+            'lightweight',
+            'gaming',
+            'portable',
+            'over-ear',
+            'on-ear'
+        ];
+
+        const preferences = preferenceWords.filter(
+            preference => text.toLowerCase().includes(preference)
         );
 
-        const data = await response.json();
+        // Remove budget instructions and conversational filler
+        let searchQuery = text
+            .replace(
+                /(?:under|below|less than|up to|upto|within|maximum(?: of)?|max(?:imum)?(?: budget)?(?: of)?)\s*\$?\s*\d+(?:\.\d+)?/gi,
+                ' '
+            )
+            .replace(/\$\s*\d+(?:\.\d+)?/g, ' ')
+            .replace(/\b(?:find|search|show|looking for|buy|get me|i need|i want|please)\b/gi, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
 
-        if (!response.ok) {
-            console.error('Gemini API error:', data.error?.message || response.status);
-            return res.status(502).json({
-                success: false,
-                message: 'Gemini could not process the shopping request.'
-            });
+        if (!searchQuery) {
+            searchQuery = text;
         }
 
-        const outputText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-        if (!outputText) {
-            throw new Error('Gemini returned an empty response.');
-        }
-
-        const interpretation = JSON.parse(outputText);
-
-        res.json({
+        return res.json({
             success: true,
-            interpretation
+            interpretation: {
+                searchQuery,
+                maxPriceUSD,
+                preferences,
+                mode: 'local_fallback'
+            }
         });
 
     } catch (error) {
-        console.error('Gemini interpretation error:', error.message);
+        console.error('Local interpretation error:', error.message);
 
-        res.status(500).json({
+        return res.status(500).json({
             success: false,
             message: 'Unable to understand the shopping request.'
         });
     }
 });
+
 
 
 app.listen(PORT, () => {
