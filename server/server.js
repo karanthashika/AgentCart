@@ -1121,6 +1121,22 @@ app.post('/api/paypal/orders/:orderId/capture', async (req, res) => {
         `).run(transaction.id);
 
         if (update.changes !== 1) {
+            const latestTransaction = db.prepare(`
+        SELECT status
+        FROM transactions
+        WHERE id = ?
+    `).get(transaction.id);
+
+            if (latestTransaction?.status === 'COMPLETED') {
+                return res.json({
+                    success: true,
+                    message: 'This transaction is already completed.',
+                    transactionId: transaction.id,
+                    orderID: orderId,
+                    status: 'COMPLETED'
+                });
+            }
+
             throw new Error('Unable to update transaction status.');
         }
 
@@ -1145,83 +1161,40 @@ app.post('/api/paypal/orders/:orderId/capture', async (req, res) => {
 // Understand a natural-language shopping request
 
 // Understand a natural-language shopping request using Gemini
-
 app.post('/api/agent/interpret', async (req, res) => {
-    const { message } = req.body;
+    try {
+        const { message } = req.body;
 
-    if (
-        typeof message !== 'string' ||
-        !message.trim() ||
-        message.length > 500
-    ) {
-        return res.status(400).json({
-            success: false,
-            message: 'Please enter a shopping request (maximum 500 characters).'
-        });
-    }
+        if (
+            typeof message !== 'string' ||
+            !message.trim() ||
+            message.length > 500
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: 'Please enter a shopping request (maximum 500 characters).'
+            });
+        }
 
-    // Free JavaScript fallback if Gemini is unavailable
-    function localInterpretation(text) {
-        const budgetMatch = text.match(
-            /(?:under|below|less than|up to|upto|no more than)\s*\$?\s*(\d+(?:\.\d{1,2})?)\s*(?:usd|dollars?)?/i
-        ) || text.match(
-            /\$\s*(\d+(?:\.\d{1,2})?)/
-        );
+        if (!process.env.GEMINI_API_KEY) {
+            return res.status(500).json({
+                success: false,
+                message: 'Gemini API key is not configured.'
+            });
+        }
 
-        const maxPriceUSD = budgetMatch
-            ? Number(budgetMatch[1])
-            : null;
-
-        const preferences = [
-            'noise cancellation',
-            'wireless',
-            'bluetooth',
-            'waterproof',
-            'lightweight',
-            'over-ear',
-            'in-ear',
-            'gaming',
-            'rechargeable'
-        ].filter(preference =>
-            text.toLowerCase().includes(preference)
-        );
-
-        let searchQuery = text
-            .replace(
-                /\b(find|search for|look for|show me|get me|buy me|i need|i want)\b/gi,
-                ''
-            )
-            .replace(
-                /(?:under|below|less than|up to|upto|no more than)\s*\$?\s*\d+(?:\.\d{1,2})?\s*(?:usd|dollars?)?/gi,
-                ''
-            )
-            .replace(/\$\s*\d+(?:\.\d{1,2})?/g, '')
-            .replace(/\s+/g, ' ')
-            .trim();
-
-        return {
-            searchQuery: searchQuery || text.trim(),
-            maxPriceUSD,
-            preferences
-        };
-    }
-
-    // Try Gemini, but never wait longer than 12 seconds
-    if (process.env.GEMINI_API_KEY) {
-        try {
-            const response = await fetch(
-                'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent',
-                {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'x-goog-api-key': process.env.GEMINI_API_KEY
-                    },
-                    signal: AbortSignal.timeout(12000),
-                    body: JSON.stringify({
-                        systemInstruction: {
-                            parts: [{
-                                text: `You are AgentCart's shopping assistant.
+        const response = await fetch(
+            'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent',
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-goog-api-key': process.env.GEMINI_API_KEY
+                },
+                body: JSON.stringify({
+                    systemInstruction: {
+                        parts: [{
+                            text: `You are AgentCart's shopping assistant.
 Understand the user's shopping request.
 Extract the product search phrase,
 maximum budget in USD if specified,
@@ -1229,105 +1202,77 @@ and product preferences.
 
 Never approve purchases or make payments.
 Return only the requested structured data.`
-                            }]
-                        },
-                        contents: [{
-                            parts: [{
-                                text: message.trim()
-                            }]
-                        }],
-                        generationConfig: {
-                            responseMimeType: 'application/json',
-                            responseSchema: {
-                                type: 'OBJECT',
-                                properties: {
-                                    searchQuery: {
-                                        type: 'STRING'
-                                    },
-                                    maxPriceUSD: {
-                                        type: 'NUMBER',
-                                        nullable: true
-                                    },
-                                    preferences: {
-                                        type: 'ARRAY',
-                                        items: {
-                                            type: 'STRING'
-                                        }
-                                    }
+                        }]
+                    },
+                    contents: [{
+                        parts: [{
+                            text: message.trim()
+                        }]
+                    }],
+                    generationConfig: {
+                        responseMimeType: 'application/json',
+                        responseSchema: {
+                            type: 'OBJECT',
+                            properties: {
+                                searchQuery: {
+                                    type: 'STRING'
                                 },
-                                required: [
-                                    'searchQuery',
-                                    'maxPriceUSD',
-                                    'preferences'
-                                ]
+                                maxPriceUSD: {
+                                    type: 'NUMBER',
+                                    nullable: true
+                                },
+                                preferences: {
+                                    type: 'ARRAY',
+                                    items: {
+                                        type: 'STRING'
+                                    }
+                                }
                             },
-                            temperature: 0.2,
-                            maxOutputTokens: 256
-                        }
-                    })
-                }
-            );
-
-            const data = await response.json();
-
-            if (!response.ok) {
-                console.error(
-                    'Gemini API error:',
-                    data.error?.message || response.status
-                );
-                throw new Error('Gemini request failed');
+                            required: [
+                                'searchQuery',
+                                'maxPriceUSD',
+                                'preferences'
+                            ]
+                        },
+                        temperature: 0.2,
+                        maxOutputTokens: 256
+                    }
+                })
             }
+        );
 
-            const outputText =
-                data.candidates?.[0]?.content?.parts?.[0]?.text;
+        const data = await response.json();
 
-            if (!outputText) {
-                throw new Error('Gemini returned an empty response');
-            }
-
-            const interpretation = JSON.parse(outputText);
-
-            if (
-                typeof interpretation.searchQuery !== 'string' ||
-                !Array.isArray(interpretation.preferences) ||
-                (
-                    interpretation.maxPriceUSD !== null &&
-                    (
-                        typeof interpretation.maxPriceUSD !== 'number' ||
-                        !Number.isFinite(interpretation.maxPriceUSD) ||
-                        interpretation.maxPriceUSD <= 0
-                    )
-                )
-            ) {
-                throw new Error('Gemini returned invalid shopping data');
-            }
-
-            return res.json({
-                success: true,
-                mode: 'gemini',
-                interpretation
+        if (!response.ok) {
+            console.error('Gemini API error:', data.error?.message || response.status);
+            return res.status(502).json({
+                success: false,
+                message: 'Gemini could not process the shopping request.'
             });
-
-        } catch (error) {
-            console.error(
-                'Gemini unavailable:',
-                error.name === 'TimeoutError'
-                    ? 'Request timed out'
-                    : error.message
-            );
         }
+
+        const outputText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+        if (!outputText) {
+            throw new Error('Gemini returned an empty response.');
+        }
+
+        const interpretation = JSON.parse(outputText);
+
+        res.json({
+            success: true,
+            interpretation
+        });
+
+    } catch (error) {
+        console.error('Gemini interpretation error:', error.message);
+
+        res.status(500).json({
+            success: false,
+            message: 'Unable to understand the shopping request.'
+        });
     }
-
-    // Gemini failed or no API key: use the free local fallback
-    const interpretation = localInterpretation(message);
-
-    return res.json({
-        success: true,
-        mode: 'local_fallback',
-        interpretation
-    });
 });
-
 
 
 app.listen(PORT, () => {
