@@ -310,6 +310,7 @@ function App() {
   }
 
 
+
   async function handleProductSearch() {
     if (!shoppingQuery.trim()) {
       setSearchError('Please enter a product to search for.')
@@ -321,7 +322,36 @@ function App() {
     setProducts([])
 
     try {
-      const response = await fetch(
+      // Step 1: Understand the user's shopping request
+      const interpretResponse = await fetch(
+        'http://localhost:5000/api/agent/interpret',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            message: shoppingQuery
+          })
+        }
+      )
+
+      const interpretData = await interpretResponse.json()
+
+      if (!interpretResponse.ok || !interpretData.success) {
+        throw new Error(
+          interpretData.message || 'Could not understand your request.'
+        )
+      }
+
+      const {
+        searchQuery,
+        maxPriceUSD,
+        preferences
+      } = interpretData.interpretation
+
+      // Step 2: Search Channel3 using the interpreted request
+      const productResponse = await fetch(
         'http://localhost:5000/api/products/search',
         {
           method: 'POST',
@@ -329,25 +359,68 @@ function App() {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            query: shoppingQuery
+            query: maxPriceUSD !== null
+              ? `${searchQuery} under $${maxPriceUSD}`
+              : searchQuery
           })
         }
       )
 
-      const data = await response.json()
+      const productData = await productResponse.json()
+      console.log(
+        'Channel3 product prices:',
+        JSON.stringify(
+          (productData.products || []).map(product => ({
+            title: product.title,
+            offers: product.offers
+          })),
+          null,
+          2
+        )
+      )
 
-      if (!response.ok) {
-        throw new Error(data.message || 'Product search failed.')
+      if (!productResponse.ok) {
+        throw new Error(
+          productData.message || 'Product search failed.'
+        )
       }
 
-      setProducts(data.products || [])
+      const matchingProducts = (productData.products || []).filter((product) => {
+        // No requested budget? Keep the product.
+        if (maxPriceUSD === null) return true
+
+        const offer = product.offers?.[0]
+        const currency = offer?.price?.currency
+        const price = Number(offer?.price?.price)
+
+        // Only compare prices we can safely identify as USD.
+        const isUSD = ['USD', '$', 'US$'].includes(currency)
+
+        return isUSD && Number.isFinite(price) && price <= maxPriceUSD
+      })
+
+      setProducts(matchingProducts)
+
+      if (matchingProducts.length === 0) {
+        setSearchError(`No products found within your $${maxPriceUSD} budget.`)
+      }
+
+      console.log('AgentCart interpretation:', {
+        searchQuery,
+        maxPriceUSD,
+        preferences,
+        mode: interpretData.mode
+      })
 
     } catch (error) {
-      setSearchError(error.message || 'Could not connect to AgentCart.')
+      setSearchError(
+        error.message || 'Could not connect to AgentCart.'
+      )
     } finally {
       setIsSearching(false)
     }
   }
+
   function isRecognizedRetailer(domain) {
     const trustedDomains = [
       'macys.com',
