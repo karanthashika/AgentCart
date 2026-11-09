@@ -25,9 +25,14 @@ function App() {
   const [purchaseError, setPurchaseError] = useState('')
   const [purchaseMessage, setPurchaseMessage] = useState('')
   const [isCreatingOrder, setIsCreatingOrder] = useState(false)
+  const [approvalId, setApprovalId] = useState(null)
+  const [approvalToken, setApprovalToken] = useState('')
+  const [approvalProductId, setApprovalProductId] = useState(null)
   async function handlePurchase(product) {
     setPurchaseError('')
     setPurchaseMessage('')
+    setApprovalId(null)
+    setApprovalToken('')
     setIsCreatingOrder(true)
 
     try {
@@ -47,18 +52,82 @@ function App() {
       const data = await response.json()
 
       if (response.status === 409 && data.decision === 'NEEDS_APPROVAL') {
-        setPurchaseMessage(
-          `Additional approval required: ${data.reason}`
+        const approvalResponse = await fetch(
+          'http://localhost:5000/api/purchase-approvals',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              productId: product.id
+            })
+          }
         )
+
+        const approvalData = await approvalResponse.json()
+
+        if (!approvalResponse.ok) {
+          throw new Error(
+            approvalData.message || 'Unable to request purchase approval.'
+          )
+        }
+
+        setApprovalId(approvalData.approvalId)
+        setApprovalToken(approvalData.token)
+        setApprovalProductId(product.id)
+
+        setPurchaseMessage(
+          `Approval required for ${approvalData.productName} ($${approvalData.amount}).`
+        )
+
         return
       }
 
       if (!response.ok) {
-        throw new Error(data.reason || data.message || 'Unable to create PayPal order.')
+        throw new Error(
+          data.reason || data.message || 'Unable to create PayPal order.'
+        )
       }
 
       setPurchaseMessage('Redirecting to PayPal...')
+      window.location.href = data.approvalUrl
 
+    } catch (error) {
+      setPurchaseError(error.message)
+    } finally {
+      setIsCreatingOrder(false)
+    }
+  }
+
+  async function handleApprovePurchase() {
+    setPurchaseError('')
+    setPurchaseMessage('')
+    setIsCreatingOrder(true)
+
+    try {
+      const response = await fetch(
+        `http://localhost:5000/api/purchase-approvals/${approvalId}/approve`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            token: approvalToken
+          })
+        }
+      )
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(
+          data.message || 'Unable to approve purchase.'
+        )
+      }
+
+      setPurchaseMessage('Redirecting to PayPal...')
       window.location.href = data.approvalUrl
 
     } catch (error) {
@@ -103,42 +172,92 @@ function App() {
       })
   }, [])
 
-  useEffect(() => {
-    async function loadTransactions() {
-      try {
-        const response = await fetch('http://localhost:5000/api/transactions')
-        const data = await response.json()
+  async function loadTransactions() {
+    try {
+      const response = await fetch('http://localhost:5000/api/transactions')
+      const data = await response.json()
 
-        if (!data.success) {
-          throw new Error('Unable to load transactions.')
-        }
-
-        setTransactions(data.transactions)
-      } catch (error) {
-        setTransactionsError(error.message)
+      if (!data.success) {
+        throw new Error('Unable to load transactions.')
       }
-    }
 
+      setTransactions(data.transactions)
+    } catch (error) {
+      setTransactionsError(error.message)
+    }
+  }
+
+  useEffect(() => {
     loadTransactions()
   }, [])
 
+  async function loadDashboardStats() {
+    try {
+      const response = await fetch('http://localhost:5000/api/dashboard')
+      const data = await response.json()
+
+      if (!data.success) {
+        throw new Error('Unable to load dashboard statistics.')
+      }
+
+      setDashboardStats(data.stats)
+    } catch (error) {
+      setDashboardError(error.message)
+    }
+  }
+
   useEffect(() => {
-    async function loadDashboardStats() {
+    loadDashboardStats()
+  }, [])
+
+  useEffect(() => {
+    async function handlePayPalReturn() {
+      const params = new URLSearchParams(window.location.search)
+      const paymentStatus = params.get('payment')
+      const orderId = params.get('token')
+
+      if (paymentStatus === 'cancelled') {
+        setPurchaseMessage('Payment was cancelled. No payment was captured.')
+        window.history.replaceState({}, '', '/')
+        return
+      }
+
+      if (paymentStatus !== 'success' || !orderId) {
+        return
+      }
+
       try {
-        const response = await fetch('http://localhost:5000/api/dashboard')
+        setIsCreatingOrder(true)
+
+        const response = await fetch(
+          `http://localhost:5000/api/paypal/orders/${encodeURIComponent(orderId)}/capture`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            }
+          }
+        )
+
         const data = await response.json()
 
         if (!data.success) {
-          throw new Error('Unable to load dashboard statistics.')
+          throw new Error(data.message || 'Payment capture failed.')
         }
 
-        setDashboardStats(data.stats)
+        setPurchaseMessage('Payment completed successfully!')
+        await loadTransactions()
+        await loadDashboardStats()
+
       } catch (error) {
-        setDashboardError(error.message)
+        setPurchaseError(error.message)
+      } finally {
+        setIsCreatingOrder(false)
+        window.history.replaceState({}, '', '/')
       }
     }
 
-    loadDashboardStats()
+    handlePayPalReturn()
   }, [])
 
   async function handleSaveRules() {
@@ -405,6 +524,14 @@ function App() {
                                 >
                                   {isCreatingOrder ? 'Creating Order...' : 'Buy with PayPal'}
                                 </button>
+                                {approvalProductId === product.id && approvalId && (
+                                  <button
+                                    onClick={handleApprovePurchase}
+                                    disabled={isCreatingOrder}
+                                  >
+                                    {isCreatingOrder ? 'Processing...' : 'Approve Purchase'}
+                                  </button>
+                                )}
                               </>
                             ) : (
                               <p className="retailer-warning">

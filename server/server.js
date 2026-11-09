@@ -292,6 +292,53 @@ app.get('/api/transactions', (req, res) => {
     }
 });
 
+// Get dashboard statistics
+app.get('/api/dashboard', (req, res) => {
+    try {
+        const stats = db.prepare(`
+            SELECT
+                COALESCE(SUM(
+                    CASE
+                        WHEN status = 'COMPLETED'
+                        AND currency = 'USD'
+                        AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')
+                        THEN amount
+                        ELSE 0
+                    END
+                ), 0) AS totalSpending,
+
+                COUNT(
+                    CASE
+                        WHEN status = 'PENDING'
+                        THEN 1
+                    END
+                ) AS pendingPayments,
+
+                COUNT(
+                    CASE
+                        WHEN status = 'BLOCKED'
+                        THEN 1
+                    END
+                ) AS blockedTransactions
+
+            FROM transactions
+        `).get();
+
+        res.json({
+            success: true,
+            stats
+        });
+
+    } catch (error) {
+        console.error('Error fetching dashboard statistics:', error.message);
+
+        res.status(500).json({
+            success: false,
+            message: 'Unable to fetch dashboard statistics.'
+        });
+    }
+});
+
 // Existing health-check route
 app.get('/', (req, res) => {
     res.json({
