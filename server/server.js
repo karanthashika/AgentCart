@@ -3,7 +3,13 @@ const express = require('express');
 const crypto = require('crypto');
 const cors = require('cors');
 require('dotenv').config();
+const Groq = require('groq-sdk');
 const db = require('./turso');
+
+// Initialize Groq only when an API key is available
+const groq = process.env.GROQ_API_KEY
+    ? new Groq({ apiKey: process.env.GROQ_API_KEY })
+    : null;
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -722,7 +728,7 @@ app.post('/api/purchase-approvals/:approvalId/approve', async (req, res) => {
         }
 
         // Reserve the approved purchase only once
-        const reservation = db.transactionAsync(async (tx) => {
+        const reservation = await db.transactionAsync(async (tx) => {
             // Expire old pending transactions
             await tx.run(`
         UPDATE transactions
@@ -787,7 +793,7 @@ app.post('/api/purchase-approvals/:approvalId/approve', async (req, res) => {
             return {
                 transactionId: transaction.lastInsertRowid
             };
-        });
+        })();
 
         if (reservation.error) {
             return res.status(409).json({
@@ -868,7 +874,7 @@ app.post('/api/purchase-approvals/:approvalId/approve', async (req, res) => {
             ) {
                 throw new Error('Unable to finalize the approved purchase.');
             }
-        });
+        })();
 
         res.status(201).json({
             success: true,
@@ -1304,25 +1310,10 @@ app.post('/api/paypal/orders/:orderId/capture', async (req, res) => {
     }
 });
 
-// Interpret shopping requests locally without relying on the Gemini API
-app.post('/api/agent/interpret', (req, res) => {
-    try {
-        const { message } = req.body;
 
-        if (
-            typeof message !== 'string' ||
-            !message.trim() ||
-            message.length > 500
-        ) {
-            return res.status(400).json({
-                success: false,
-                message: 'Please enter a shopping request (maximum 500 characters).'
-            });
-        }
-
-        const text = message.trim();
-
-        // Extract the user's maximum budget
+// Interpret shopping requests using Groq, with a local fallback
+app.post('/api/agent/interpret', async (req, res) => {
+    const interpretLocally = (text) => {
         const budgetMatch = text.match(
             /(?:under|below|less than|up to|upto|within|maximum(?: of)?|max(?:imum)?(?: budget)?(?: of)?)\s*\$?\s*(\d+(?:\.\d+)?)/i
         ) || text.match(/\$\s*(\d+(?:\.\d+)?)/);
@@ -1331,7 +1322,6 @@ app.post('/api/agent/interpret', (req, res) => {
             ? Number(budgetMatch[1])
             : null;
 
-        // Extract useful shopping preferences
         const preferenceWords = [
             'wireless',
             'bluetooth',
@@ -1349,7 +1339,6 @@ app.post('/api/agent/interpret', (req, res) => {
             preference => text.toLowerCase().includes(preference)
         );
 
-        // Remove budget instructions and conversational filler
         let searchQuery = text
             .replace(
                 /(?:under|below|less than|up to|upto|within|maximum(?: of)?|max(?:imum)?(?: budget)?(?: of)?)\s*\$?\s*\d+(?:\.\d+)?/gi,
@@ -1360,22 +1349,251 @@ app.post('/api/agent/interpret', (req, res) => {
             .replace(/\s+/g, ' ')
             .trim();
 
-        if (!searchQuery) {
-            searchQuery = text;
+        if (!searchQuery) searchQuery = text;
+
+        return { searchQuery, maxPriceUSD, preferences };
+    };
+
+    try {
+        const { message } = req.body;
+
+        if (
+            typeof message !== 'string' ||
+            !message.trim() ||
+            message.length > 500
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: 'Please enter a shopping request (maximum 500 characters).'
+            });
         }
+
+        const text = message.trim();
+
+        // Use Groq as the primary AI interpreter
+        if (groq) {
+            try {
+                const completion = await groq.chat.completions.create({
+                    model: 'openai/gpt-oss-20b',
+                    messages: [
+                        {
+                            role: 'system',
+                            content: `Extract shopping intent from the user's message.
+Return only the requested structured fields.
+searchQuery must contain the product being searched for, without budget instructions.
+maxPriceUSD must be a positive USD budget if explicitly provided, otherwise null.
+Do not convert currencies or invent a budget.
+preferences must contain relevant product preferences explicitly mentioned by the user.`
+                        },
+                        {
+                            role: 'user',
+                            content: text
+                        }
+                    ],
+                    response_format: {
+                        type: 'json_schema',
+                        json_schema: {
+                            name: 'shopping_intent',
+                            strict: true,
+                            schema: {
+                                type: 'object',
+                                properties: {
+                                    searchQuery: { type: 'string' },
+                                    maxPriceUSD: {
+                                        type: ['number', 'null']
+                                    },
+                                    preferences: {
+                                        type: 'array',
+                                        items: { type: 'string' }
+                                    }
+                                },
+                                required: [
+                                    'searchQuery',
+                                    'maxPriceUSD',
+                                    'preferences'
+                                ],
+                                additionalProperties: false
+                            }
+                        }
+                    }
+                });
+
+                const result = JSON.parse(
+                    completion.choices[0].message.content
+                );
+
+                if (
+                    typeof result.searchQuery === 'string' &&
+                    result.searchQuery.trim() &&
+                    result.searchQuery.length <= 200 &&
+                    (
+                        result.maxPriceUSD === null ||
+                        (
+                            typeof result.maxPriceUSD === 'number' &&
+                            Number.isFinite(result.maxPriceUSD) &&
+                            result.maxPriceUSD > 0
+                        )
+                    ) &&
+                    Array.isArray(result.preferences) &&
+                    result.preferences.every(
+                        item => typeof item === 'string'
+                    )
+                ) {
+                    const interpretation = {
+                        searchQuery: result.searchQuery.trim(),
+                        maxPriceUSD: result.maxPriceUSD,
+                        preferences: result.preferences.slice(0, 10),
+                        mode: 'groq',
+                        provider: 'groq'
+                    };
+
+                    return res.json({
+                        success: true,
+                        mode: 'groq',
+                        interpretation
+                    });
+                }
+
+                throw new Error('Groq returned an invalid interpretation.');
+            } catch (groqError) {
+                console.error(
+                    'Groq interpretation failed:',
+                    groqError.message
+                );
+            }
+        }
+
+
+        // Try Gemini if Groq is unavailable or returns invalid data
+        if (process.env.GEMINI_API_KEY) {
+            try {
+                const geminiResponse = await fetch(
+                    'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent',
+                    {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'x-goog-api-key': process.env.GEMINI_API_KEY
+                        },
+                        body: JSON.stringify({
+                            contents: [{
+                                role: 'user',
+                                parts: [{
+                                    text: `Extract shopping intent from this request:
+"${text}"
+
+Return the product search query without budget instructions.
+Only include a USD budget if explicitly mentioned.
+Do not convert currencies or invent preferences.
+Include relevant preferences explicitly mentioned by the user.`
+                                }]
+                            }],
+                            generationConfig: {
+                                responseMimeType: 'application/json',
+                                responseSchema: {
+                                    type: 'OBJECT',
+                                    properties: {
+                                        searchQuery: { type: 'STRING' },
+                                        maxPriceUSD: {
+                                            type: 'NUMBER',
+                                            nullable: true
+                                        },
+                                        preferences: {
+                                            type: 'ARRAY',
+                                            items: { type: 'STRING' }
+                                        }
+                                    },
+                                    required: [
+                                        'searchQuery',
+                                        'maxPriceUSD',
+                                        'preferences'
+                                    ]
+                                }
+                            }
+                        })
+                    }
+                );
+
+                if (!geminiResponse.ok) {
+                    const errorData = await geminiResponse.json();
+                    throw new Error(
+                        errorData.error?.message || 'Gemini API request failed.'
+                    );
+                }
+
+                const geminiData = await geminiResponse.json();
+
+                const responseText =
+                    geminiData.candidates?.[0]?.content?.parts
+                        ?.map(part => part.text || '')
+                        .join('');
+
+                if (!responseText) {
+                    throw new Error('Gemini returned an empty response.');
+                }
+
+                const result = JSON.parse(responseText);
+
+                if (
+                    typeof result.searchQuery === 'string' &&
+                    result.searchQuery.trim() &&
+                    result.searchQuery.length <= 200 &&
+                    (
+                        result.maxPriceUSD === null ||
+                        (
+                            typeof result.maxPriceUSD === 'number' &&
+                            Number.isFinite(result.maxPriceUSD) &&
+                            result.maxPriceUSD > 0
+                        )
+                    ) &&
+                    Array.isArray(result.preferences) &&
+                    result.preferences.every(
+                        item => typeof item === 'string'
+                    )
+                ) {
+                    const interpretation = {
+                        searchQuery: result.searchQuery.trim(),
+                        maxPriceUSD: result.maxPriceUSD,
+                        preferences: result.preferences.slice(0, 10),
+                        mode: 'gemini',
+                        provider: 'gemini'
+                    };
+
+                    console.log('Shopping interpretation succeeded with Gemini.');
+
+                    return res.json({
+                        success: true,
+                        mode: 'gemini',
+                        interpretation
+                    });
+                }
+
+                throw new Error('Gemini returned an invalid interpretation.');
+
+            } catch (geminiError) {
+                console.error(
+                    'Gemini interpretation failed:',
+                    geminiError.message
+                );
+            }
+        }
+
+        // Use the existing local parser if both AI providers fail
+
+        const interpretation = {
+            ...interpretLocally(text),
+            mode: 'local_fallback',
+            provider: 'local'
+        };
 
         return res.json({
             success: true,
-            interpretation: {
-                searchQuery,
-                maxPriceUSD,
-                preferences,
-                mode: 'local_fallback'
-            }
+            mode: 'local_fallback',
+            interpretation
         });
 
     } catch (error) {
-        console.error('Local interpretation error:', error.message);
+        console.error('Shopping interpretation error:', error.message);
 
         return res.status(500).json({
             success: false,
@@ -1383,6 +1601,7 @@ app.post('/api/agent/interpret', (req, res) => {
         });
     }
 });
+
 
 
 
