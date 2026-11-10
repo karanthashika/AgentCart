@@ -294,3 +294,9 @@ body {
   font-size: 13px !important;
   font-weight: bold;
 }
+
+.spending-rules .rule-card input {
+  color: #ffffff !important;
+  background-color: #0f172a !important;
+  -webkit-text-fill-color: #ffffff !important;
+}
