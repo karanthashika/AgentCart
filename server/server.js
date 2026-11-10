@@ -3,7 +3,7 @@ const express = require('express');
 const crypto = require('crypto');
 const cors = require('cors');
 require('dotenv').config();
-const db = require('./database');
+const db = require('./turso');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -12,7 +12,7 @@ app.use(cors());
 app.use(express.json());
 
 // Save spending rules
-app.post('/api/rules', (req, res) => {
+app.post('/api/rules', async (req, res) => {
     const { monthlyLimit, transactionLimit } = req.body;
 
     if (
@@ -30,33 +30,39 @@ app.post('/api/rules', (req, res) => {
         });
     }
 
-    const saveRules = db.prepare(`
-        INSERT INTO spending_rules (id, monthly_limit, transaction_limit)
-        VALUES (1, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            monthly_limit = excluded.monthly_limit,
-            transaction_limit = excluded.transaction_limit,
-            updated_at = CURRENT_TIMESTAMP
-    `);
+    try {
+        await db.run(`
+            INSERT INTO spending_rules (id, monthly_limit, transaction_limit)
+            VALUES (1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                monthly_limit = excluded.monthly_limit,
+                transaction_limit = excluded.transaction_limit,
+                updated_at = CURRENT_TIMESTAMP
+        `, [monthlyLimit, transactionLimit]);
 
-    saveRules.run(monthlyLimit, transactionLimit);
-
-    res.json({
-        success: true,
-        message: 'Spending rules saved successfully!',
-        rules: { monthlyLimit, transactionLimit }
-    });
+        res.json({
+            success: true,
+            message: 'Spending rules saved successfully!',
+            rules: { monthlyLimit, transactionLimit }
+        });
+    } catch (error) {
+        console.error('Error saving spending rules:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Unable to save spending rules.'
+        });
+    }
 });
 
 // Calculate completed spending for the current month
-function getMonthlySpent() {
-    const result = db.prepare(`
+async function getMonthlySpent() {
+    const result = await db.get(`
         SELECT COALESCE(SUM(amount), 0) AS total
         FROM transactions
         WHERE status = 'COMPLETED'
         AND currency = 'USD'
         AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')
-    `).get();
+    `);
 
     return result.total;
 }
@@ -209,13 +215,13 @@ app.post('/api/products/search', async (req, res) => {
 
         const data = await response.json();
 
-        const rulesRow = db.prepare(`
-    SELECT monthly_limit, transaction_limit
-    FROM spending_rules
-    WHERE id = 1
-`).get();
+        const rulesRow = await db.get(`
+            SELECT monthly_limit, transaction_limit
+            FROM spending_rules
+            WHERE id = 1
+        `);
 
-        const monthlySpent = getMonthlySpent();
+        const monthlySpent = await getMonthlySpent();
 
         const products = (data.products || []).map((product) => {
             const offer = product.offers?.[0];
@@ -276,34 +282,42 @@ app.post('/api/products/search', async (req, res) => {
 });
 
 // Get saved spending rules
-app.get('/api/rules', (req, res) => {
-    const rules = db.prepare(`
-        SELECT monthly_limit, transaction_limit, updated_at
-        FROM spending_rules
-        WHERE id = 1
-    `).get();
+app.get('/api/rules', async (req, res) => {
+    try {
+        const rules = await db.get(`
+            SELECT monthly_limit, transaction_limit, updated_at
+            FROM spending_rules
+            WHERE id = 1
+        `);
 
-    if (!rules) {
-        return res.json({
+        if (!rules) {
+            return res.json({
+                success: true,
+                rules: null
+            });
+        }
+
+        res.json({
             success: true,
-            rules: null
+            rules: {
+                monthlyLimit: rules.monthly_limit,
+                transactionLimit: rules.transaction_limit,
+                updatedAt: rules.updated_at
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching spending rules:', error.message);
+        res.status(500).json({
+            success: false,
+            message: 'Unable to fetch spending rules.'
         });
     }
-
-    res.json({
-        success: true,
-        rules: {
-            monthlyLimit: rules.monthly_limit,
-            transactionLimit: rules.transaction_limit,
-            updatedAt: rules.updated_at
-        }
-    });
 });
 
 // Get transaction history
-app.get('/api/transactions', (req, res) => {
+app.get('/api/transactions', async (req, res) => {
     try {
-        const transactions = db.prepare(`
+        const transactions = await db.all(`
             SELECT
                 id,
                 product_name,
@@ -314,16 +328,14 @@ app.get('/api/transactions', (req, res) => {
                 created_at
             FROM transactions
             ORDER BY created_at DESC
-        `).all();
+        `);
 
         res.json({
             success: true,
             transactions
         });
-
     } catch (error) {
         console.error('Error fetching transactions:', error.message);
-
         res.status(500).json({
             success: false,
             message: 'Unable to fetch transaction history.'
@@ -332,9 +344,9 @@ app.get('/api/transactions', (req, res) => {
 });
 
 // Get dashboard statistics
-app.get('/api/dashboard', (req, res) => {
+app.get('/api/dashboard', async (req, res) => {
     try {
-        const stats = db.prepare(`
+        const stats = await db.get(`
             SELECT
                 COALESCE(SUM(
                     CASE
@@ -361,16 +373,14 @@ app.get('/api/dashboard', (req, res) => {
                 ) AS blockedTransactions
 
             FROM transactions
-        `).get();
+        `);
 
         res.json({
             success: true,
             stats
         });
-
     } catch (error) {
         console.error('Error fetching dashboard statistics:', error.message);
-
         res.status(500).json({
             success: false,
             message: 'Unable to fetch dashboard statistics.'
@@ -442,18 +452,18 @@ function verifyApprovalToken(submittedToken, storedHash) {
     );
 }
 // Find and validate a pending purchase approval
-function getPendingApproval(approvalId, token) {
+async function getPendingApproval(approvalId, token) {
     const id = Number(approvalId);
 
     if (!Number.isSafeInteger(id) || id <= 0) {
         return { error: 'Invalid approval ID.' };
     }
 
-    const approval = db.prepare(`
+    const approval = await db.get(`
         SELECT *
         FROM purchase_approvals
         WHERE id = ?
-    `).get(id);
+    `, [id]);
 
     if (!approval) {
         return { error: 'Approval request not found.' };
@@ -463,16 +473,16 @@ function getPendingApproval(approvalId, token) {
         return { error: 'This approval request has already been used.' };
     }
 
-    const expired = db.prepare(`
+    const expiryResult = await db.get(`
         SELECT datetime(?) <= datetime('now') AS expired
-    `).get(approval.expires_at).expired;
+    `, [approval.expires_at]);
 
-    if (expired) {
-        db.prepare(`
+    if (expiryResult.expired) {
+        await db.run(`
             UPDATE purchase_approvals
             SET status = 'EXPIRED'
             WHERE id = ? AND status = 'PENDING'
-        `).run(id);
+        `, [id]);
 
         return { error: 'This approval request has expired.' };
     }
@@ -483,6 +493,45 @@ function getPendingApproval(approvalId, token) {
 
     return { approval };
 }
+
+// Get purchase approval requests
+app.get('/api/purchase-approvals', async (req, res) => {
+    try {
+        // Mark expired requests
+        await db.run(`
+            UPDATE purchase_approvals
+            SET status = 'EXPIRED'
+            WHERE status = 'PENDING'
+            AND expires_at <= datetime('now')
+        `);
+
+        const approvals = await db.all(`
+            SELECT
+                id,
+                product_id,
+                product_name,
+                amount,
+                status,
+                expires_at,
+                created_at
+            FROM purchase_approvals
+            ORDER BY created_at DESC
+        `);
+
+        res.json({
+            success: true,
+            approvals
+        });
+    } catch (error) {
+        console.error('Error fetching purchase approvals:', error);
+
+        res.status(500).json({
+            success: false,
+            message: 'Unable to fetch purchase approval requests.'
+        });
+    }
+});
+
 
 // Request approval for a purchase that exceeds the transaction limit
 app.post('/api/purchase-approvals', async (req, res) => {
@@ -528,11 +577,11 @@ app.post('/api/purchase-approvals', async (req, res) => {
             });
         }
 
-        const rules = db.prepare(`
-            SELECT monthly_limit, transaction_limit
-            FROM spending_rules
-            WHERE id = 1
-        `).get();
+        const rules = await db.get(`
+    SELECT monthly_limit, transaction_limit
+    FROM spending_rules
+    WHERE id = 1
+`);
 
         if (!rules) {
             return res.status(400).json({
@@ -541,13 +590,15 @@ app.post('/api/purchase-approvals', async (req, res) => {
             });
         }
 
+        const monthlySpent = await getMonthlySpent();
+
         const decision = evaluatePurchase(
             price,
             {
                 monthlyLimit: rules.monthly_limit,
                 transactionLimit: rules.transaction_limit
             },
-            getMonthlySpent()
+            monthlySpent
         );
 
         if (decision.decision !== 'NEEDS_APPROVAL') {
@@ -565,16 +616,16 @@ app.post('/api/purchase-approvals', async (req, res) => {
             .update(approvalToken)
             .digest('hex');
 
-        const approval = db.prepare(`
-        INSERT INTO purchase_approvals (
-    product_id,
-    product_name,
-    amount,
-    expires_at,
-    approval_token_hash
-)
-            VALUES (?, ?, ?, datetime('now', '+10 minutes'), ?)
-        `).run(productId, product.title, price, approvalTokenHash);
+        const approval = await db.run(`
+    INSERT INTO purchase_approvals (
+        product_id,
+        product_name,
+        amount,
+        expires_at,
+        approval_token_hash
+    )
+    VALUES (?, ?, ?, datetime('now', '+10 minutes'), ?)
+`, [productId, product.title, price, approvalTokenHash]);
 
         res.status(201).json({
             success: true,
@@ -603,7 +654,7 @@ app.post('/api/purchase-approvals/:approvalId/approve', async (req, res) => {
         const { approvalId } = req.params;
         const { token } = req.body;
 
-        const result = getPendingApproval(approvalId, token);
+        const result = await getPendingApproval(approvalId, token);
 
         if (result.error) {
             return res.status(409).json({
@@ -657,12 +708,11 @@ app.post('/api/purchase-approvals/:approvalId/approve', async (req, res) => {
             });
         }
 
-        // Load the latest spending rules
-        const rules = db.prepare(`
-            SELECT monthly_limit, transaction_limit
-            FROM spending_rules
-            WHERE id = 1
-        `).get();
+        const rules = await db.get(`
+    SELECT monthly_limit, transaction_limit
+    FROM spending_rules
+    WHERE id = 1
+`);
 
         if (!rules) {
             return res.status(400).json({
@@ -672,23 +722,25 @@ app.post('/api/purchase-approvals/:approvalId/approve', async (req, res) => {
         }
 
         // Reserve the approved purchase only once
-        const reserveApproval = db.transaction(() => {
+        const reservation = db.transactionAsync(async (tx) => {
             // Expire old pending transactions
-            db.prepare(`
-                UPDATE transactions
-                SET status = 'EXPIRED'
-                WHERE status = 'PENDING'
-                AND created_at <= datetime('now', '-30 minutes')
-            `).run();
+            await tx.run(`
+        UPDATE transactions
+        SET status = 'EXPIRED'
+        WHERE status = 'PENDING'
+        AND created_at <= datetime('now', '-30 minutes')
+    `);
 
             // Calculate current monthly spending
-            const latestSpent = db.prepare(`
-                SELECT COALESCE(SUM(amount), 0) AS total
-                FROM transactions
-                WHERE status IN ('COMPLETED', 'PENDING')
-                AND currency = 'USD'
-                AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')
-            `).get().total;
+            const spentResult = await tx.get(`
+        SELECT COALESCE(SUM(amount), 0) AS total
+        FROM transactions
+        WHERE status IN ('COMPLETED', 'PENDING')
+        AND currency = 'USD'
+        AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')
+    `);
+
+            const latestSpent = spentResult.total;
 
             // Recheck the spending policy
             const latestDecision = evaluatePurchase(
@@ -707,13 +759,13 @@ app.post('/api/purchase-approvals/:approvalId/approve', async (req, res) => {
             }
 
             // Mark this approval as being processed
-            const updated = db.prepare(`
-                UPDATE purchase_approvals
-                SET status = 'PROCESSING'
-                WHERE id = ?
-                AND status = 'PENDING'
-                AND expires_at > datetime('now')
-            `).run(approval.id);
+            const updated = await tx.run(`
+        UPDATE purchase_approvals
+        SET status = 'PROCESSING'
+        WHERE id = ?
+        AND status = 'PENDING'
+        AND expires_at > datetime('now')
+    `, [approval.id]);
 
             if (updated.changes !== 1) {
                 return {
@@ -722,22 +774,20 @@ app.post('/api/purchase-approvals/:approvalId/approve', async (req, res) => {
             }
 
             // Reserve a pending transaction
-            const transaction = db.prepare(`
-                INSERT INTO transactions (
-                    product_name,
-                    amount,
-                    currency,
-                    status
-                )
-                VALUES (?, ?, 'USD', 'PENDING')
-            `).run(product.title, currentPrice);
+            const transaction = await tx.run(`
+        INSERT INTO transactions (
+            product_name,
+            amount,
+            currency,
+            status
+        )
+        VALUES (?, ?, 'USD', 'PENDING')
+    `, [product.title, currentPrice]);
 
             return {
                 transactionId: transaction.lastInsertRowid
             };
         });
-
-        const reservation = reserveApproval();
 
         if (reservation.error) {
             return res.status(409).json({
@@ -799,18 +849,18 @@ app.post('/api/purchase-approvals/:approvalId/approve', async (req, res) => {
         }
 
         // Save the PayPal order and consume the approval request
-        const completeApproval = db.transaction(() => {
-            const transactionUpdate = db.prepare(`
-                UPDATE transactions
-                SET paypal_order_id = ?
-                WHERE id = ? AND status = 'PENDING'
-            `).run(paypalData.id, reservedTransactionId);
+        await db.transactionAsync(async (tx) => {
+            const transactionUpdate = await tx.run(`
+        UPDATE transactions
+        SET paypal_order_id = ?
+        WHERE id = ? AND status = 'PENDING'
+    `, [paypalData.id, reservedTransactionId]);
 
-            const approvalUpdate = db.prepare(`
-                UPDATE purchase_approvals
-                SET status = 'APPROVED'
-                WHERE id = ? AND status = 'PROCESSING'
-            `).run(approval.id);
+            const approvalUpdate = await tx.run(`
+        UPDATE purchase_approvals
+        SET status = 'APPROVED'
+        WHERE id = ? AND status = 'PROCESSING'
+    `, [approval.id]);
 
             if (
                 transactionUpdate.changes !== 1 ||
@@ -819,8 +869,6 @@ app.post('/api/purchase-approvals/:approvalId/approve', async (req, res) => {
                 throw new Error('Unable to finalize the approved purchase.');
             }
         });
-
-        completeApproval();
 
         res.status(201).json({
             success: true,
@@ -834,19 +882,19 @@ app.post('/api/purchase-approvals/:approvalId/approve', async (req, res) => {
         console.error('Purchase approval error:', error.message);
 
         if (reservedTransactionId) {
-            db.prepare(`
-                UPDATE transactions
-                SET status = 'FAILED'
-                WHERE id = ? AND status = 'PENDING'
-            `).run(reservedTransactionId);
+            await db.run(`
+        UPDATE transactions
+        SET status = 'FAILED'
+        WHERE id = ? AND status = 'PENDING'
+    `, [reservedTransactionId]);
         }
 
         if (processingApprovalId) {
-            db.prepare(`
-                UPDATE purchase_approvals
-                SET status = 'FAILED'
-                WHERE id = ? AND status = 'PROCESSING'
-            `).run(processingApprovalId);
+            await db.run(`
+        UPDATE purchase_approvals
+        SET status = 'FAILED'
+        WHERE id = ? AND status = 'PROCESSING'
+    `, [processingApprovalId]);
         }
 
         res.status(500).json({
@@ -881,6 +929,12 @@ app.post('/api/paypal/orders', async (req, res) => {
         );
 
         const price = Number(offer?.price?.price);
+        console.log('[PAYPAL DEBUG] Product:', {
+            productId,
+            productName: product.title,
+            price,
+            retailer: offer?.domain
+        });
 
         if (!offer || !Number.isFinite(price) || price <= 0) {
             return res.status(400).json({
@@ -903,11 +957,11 @@ app.post('/api/paypal/orders', async (req, res) => {
         }
 
         // Load the user's spending rules
-        const rules = db.prepare(`
-            SELECT monthly_limit, transaction_limit
-            FROM spending_rules
-            WHERE id = 1
-        `).get();
+        const rules = await db.get(`
+    SELECT monthly_limit, transaction_limit
+    FROM spending_rules
+    WHERE id = 1
+`);
 
         if (!rules) {
             return res.status(400).json({
@@ -917,22 +971,25 @@ app.post('/api/paypal/orders', async (req, res) => {
         }
 
         // Reserve the monthly budget while the PayPal order is pending
-        const reserveBudget = db.transaction(() => {
+        const reservation = await db.transactionAsync(async (tx) => {
             // Release abandoned reservations older than 30 minutes
-            db.prepare(`
-                UPDATE transactions
-                SET status = 'EXPIRED'
-                WHERE status = 'PENDING'
-                AND created_at <= datetime('now', '-30 minutes')
-            `).run();
+            await tx.run(`
+        UPDATE transactions
+        SET status = 'EXPIRED'
+        WHERE status = 'PENDING'
+        AND created_at <= datetime('now', '-30 minutes')
+    `);
 
-            const spent = db.prepare(`
-                SELECT COALESCE(SUM(amount), 0) AS total
-                FROM transactions
-                WHERE status IN ('COMPLETED', 'PENDING')
-                AND currency = 'USD'
-                AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')
-            `).get().total;
+            // Count completed and pending purchases for this month
+            const spentResult = await tx.get(`
+        SELECT COALESCE(SUM(amount), 0) AS total
+        FROM transactions
+        WHERE status IN ('COMPLETED', 'PENDING')
+        AND currency = 'USD'
+        AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')
+    `);
+
+            const monthlySpent = Number(spentResult.total);
 
             const decision = evaluatePurchase(
                 price,
@@ -940,8 +997,15 @@ app.post('/api/paypal/orders', async (req, res) => {
                     monthlyLimit: rules.monthly_limit,
                     transactionLimit: rules.transaction_limit
                 },
-                spent
+                monthlySpent
             );
+            console.log('[PAYPAL DEBUG] Policy:', {
+                monthlyLimit: rules.monthly_limit,
+                transactionLimit: rules.transaction_limit,
+                monthlySpent,
+                decision: decision.decision,
+                reason: decision.reason
+            });
 
             if (decision.decision === 'BLOCKED') {
                 return { blocked: true, decision };
@@ -951,17 +1015,15 @@ app.post('/api/paypal/orders', async (req, res) => {
                 return { needsApproval: true, decision };
             }
 
-            const result = db.prepare(`
-                INSERT INTO transactions (product_name, amount, currency, status)
-                VALUES (?, ?, 'USD', 'PENDING')
-            `).run(product.title, price);
+            const result = await tx.run(`
+        INSERT INTO transactions (product_name, amount, currency, status)
+        VALUES (?, ?, 'USD', 'PENDING')
+    `, [product.title, price]);
 
             return {
                 transactionId: result.lastInsertRowid
             };
-        });
-
-        const reservation = reserveBudget();
+        })();
 
         if (reservation.blocked) {
             return res.status(403).json({
@@ -1032,11 +1094,11 @@ app.post('/api/paypal/orders', async (req, res) => {
         }
 
         // Save PayPal's order ID against our pending transaction
-        db.prepare(`
-            UPDATE transactions
-            SET paypal_order_id = ?
-            WHERE id = ?
-        `).run(paypalData.id, reservedTransactionId);
+        await db.run(`
+    UPDATE transactions
+    SET paypal_order_id = ?
+    WHERE id = ?
+`, [paypalData.id, reservedTransactionId]);
 
         res.status(201).json({
             success: true,
@@ -1050,11 +1112,11 @@ app.post('/api/paypal/orders', async (req, res) => {
         console.error('PayPal order creation error:', error.message);
 
         if (reservedTransactionId) {
-            db.prepare(`
-                UPDATE transactions
-                SET status = 'FAILED'
-                WHERE id = ? AND status = 'PENDING'
-            `).run(reservedTransactionId);
+            await db.run(`
+        UPDATE transactions
+        SET status = 'FAILED'
+        WHERE id = ? AND status = 'PENDING'
+    `, [reservedTransactionId]);
         }
 
         res.status(500).json({
@@ -1091,11 +1153,11 @@ app.post('/api/paypal/orders/:orderId/capture', async (req, res) => {
         const { orderId } = req.params;
 
         // Find the matching pending transaction
-        const transaction = db.prepare(`
-            SELECT id, product_name, amount, currency, status
-            FROM transactions
-            WHERE paypal_order_id = ?
-        `).get(orderId);
+        const transaction = await db.get(`
+    SELECT id, product_name, amount, currency, status
+    FROM transactions
+    WHERE paypal_order_id = ?
+`, [orderId]);
 
         if (!transaction) {
             return res.status(404).json({
@@ -1198,18 +1260,18 @@ app.post('/api/paypal/orders/:orderId/capture', async (req, res) => {
         }
 
         // Mark transaction completed only after PayPal confirms capture
-        const update = db.prepare(`
-            UPDATE transactions
-            SET status = 'COMPLETED'
-            WHERE id = ? AND status = 'PENDING'
-        `).run(transaction.id);
+        const update = await db.run(`
+    UPDATE transactions
+    SET status = 'COMPLETED'
+    WHERE id = ? AND status = 'PENDING'
+`, [transaction.id]);
 
         if (update.changes !== 1) {
-            const latestTransaction = db.prepare(`
+            const latestTransaction = await db.get(`
         SELECT status
         FROM transactions
         WHERE id = ?
-    `).get(transaction.id);
+    `, [transaction.id]);
 
             if (latestTransaction?.status === 'COMPLETED') {
                 return res.json({
