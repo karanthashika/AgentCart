@@ -2,6 +2,9 @@ import './App.css'
 import { useState, useEffect, useRef } from 'react'
 import Sidebar from './Sidebar'
 
+const API_BASE_URL =
+    import.meta.env.VITE_API_URL || 'http://localhost:5000'
+
 function App() {
   const paypalReturnHandled = useRef(false)
   const [activePage, setActivePage] = useState('Dashboard')
@@ -63,7 +66,7 @@ function App() {
 
     try {
       const response = await fetch(
-        'http://localhost:5000/api/paypal/orders',
+        `${API_BASE_URL}/api/paypal/orders`,
         {
           method: 'POST',
           headers: {
@@ -80,7 +83,7 @@ function App() {
 
       if (response.status === 409 && data.decision === 'NEEDS_APPROVAL') {
         const approvalResponse = await fetch(
-          'http://localhost:5000/api/purchase-approvals',
+          `${API_BASE_URL}/api/purchase-approvals`,
           {
             method: 'POST',
             headers: {
@@ -135,7 +138,7 @@ function App() {
 
     try {
       const response = await fetch(
-        `http://localhost:5000/api/purchase-approvals/${approvalId}/approve`,
+        `${API_BASE_URL}/api/purchase-approvals/${approvalId}/approve`,
         {
           method: 'POST',
           headers: {
@@ -168,7 +171,7 @@ function App() {
 
   useEffect(() => {
     // Check backend connection
-    fetch('http://localhost:5000')
+    fetch(`${API_BASE_URL}`)
       .then((response) => {
         if (!response.ok) {
           throw new Error('Backend connection failed')
@@ -183,7 +186,7 @@ function App() {
       })
 
     // Load saved spending rules
-    fetch('http://localhost:5000/api/rules')
+    fetch(`${API_BASE_URL}/api/rules`)
       .then((response) => {
         if (!response.ok) {
           throw new Error('Could not load spending rules')
@@ -203,7 +206,7 @@ function App() {
 
   async function loadTransactions() {
     try {
-      const response = await fetch('http://localhost:5000/api/transactions')
+      const response = await fetch(`${API_BASE_URL}/api/transactions`)
       const data = await response.json()
 
       if (!data.success) {
@@ -222,7 +225,7 @@ function App() {
 
   async function loadDashboardStats() {
     try {
-      const response = await fetch('http://localhost:5000/api/dashboard')
+      const response = await fetch(`${API_BASE_URL}/api/dashboard`)
       const data = await response.json()
 
       if (!data.success) {
@@ -264,7 +267,7 @@ function App() {
         setIsCreatingOrder(true)
 
         const response = await fetch(
-          `http://localhost:5000/api/paypal/orders/${encodeURIComponent(orderId)}/capture`,
+          `${API_BASE_URL}/api/paypal/orders/${encodeURIComponent(orderId)}/capture`,
           {
             method: 'POST',
             headers: {
@@ -320,7 +323,7 @@ function App() {
     setSaved(false);
 
     try {
-      const response = await fetch('http://localhost:5000/api/rules', {
+      const response = await fetch(`${API_BASE_URL}/api/rules`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -358,7 +361,7 @@ function App() {
     try {
       // Step 1: Understand the user's shopping request
       const interpretResponse = await fetch(
-        'http://localhost:5000/api/agent/interpret',
+        `${API_BASE_URL}/api/agent/interpret`,
         {
           method: 'POST',
           headers: {
@@ -386,7 +389,7 @@ function App() {
 
       // Step 2: Search Channel3 using the interpreted request
       const productResponse = await fetch(
-        'http://localhost:5000/api/products/search',
+        `${API_BASE_URL}/api/products/search`,
         {
           method: 'POST',
           headers: {
@@ -503,7 +506,7 @@ function App() {
 
       try {
         const response = await fetch(
-          'http://localhost:5000/api/purchase-approvals'
+          `${API_BASE_URL}/api/purchase-approvals`
         )
 
         const data = await response.json()
