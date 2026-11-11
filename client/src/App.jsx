@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react'
 import Sidebar from './Sidebar'
 
 const API_BASE_URL =
-    import.meta.env.VITE_API_URL || 'http://localhost:5000'
+  import.meta.env.VITE_API_URL || 'http://localhost:5000'
 
 function App() {
   const paypalReturnHandled = useRef(false)
@@ -647,7 +647,7 @@ function App() {
 
                             <p>Retailer: {retailerDomain || 'Unknown retailer'}</p>
                             {product.spendingDecision && (
-                              <div className="spending-decision">
+                              <div className={`spending-decision ${product.spendingDecision.decision.toLowerCase().replace('_', '-')}`}>
                                 <strong>
                                   Spending Decision: {product.spendingDecision.decision}
                                 </strong>
@@ -702,9 +702,13 @@ function App() {
             )}
           </div>
         )}
-        <h1>{activePage === 'Dashboard' ? 'Welcome to AgentCart' : activePage}</h1>
-        <p>Your AI can shop. You stay in control.</p>
-        <p>Backend Status: {backendStatus}</p>
+        {activePage === 'Dashboard' && (
+          <>
+            <h1>Welcome to AgentCart</h1>
+            <p>Your AI can shop. You stay in control.</p>
+            <p>Backend Status: {backendStatus}</p>
+          </>
+        )}
 
         {activePage === 'Dashboard' && (
           <>
